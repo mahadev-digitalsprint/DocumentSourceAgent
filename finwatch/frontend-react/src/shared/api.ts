@@ -9,6 +9,8 @@ import type {
   ChangeLog,
   Company,
   CompanyCreateInput,
+  CrawlDiagnosticRecord,
+  CrawlDiagnosticsSummary,
   DirectRunResult,
   EmailAlertConfig,
   EmailAlertSaveInput,
@@ -151,4 +153,37 @@ export const analyticsApi = {
     if (companyId) params.set('company_id', String(companyId))
     return request<AnalyticsDocChangeType>(`/analytics/doc-change-types?${params.toString()}`)
   },
+}
+
+export const crawlApi = {
+  diagnostics: (args?: {
+    hours?: number
+    companyId?: number
+    strategy?: string
+    domain?: string
+    blocked?: boolean
+    limit?: number
+  }) => {
+    const params = new URLSearchParams()
+    if (args?.hours) params.set('hours', String(args.hours))
+    if (args?.companyId) params.set('company_id', String(args.companyId))
+    if (args?.strategy) params.set('strategy', args.strategy)
+    if (args?.domain) params.set('domain', args.domain)
+    if (typeof args?.blocked === 'boolean') params.set('blocked', String(args.blocked))
+    if (args?.limit) params.set('limit', String(args.limit))
+    const qs = params.toString()
+    return request<CrawlDiagnosticRecord[]>(`/crawl/diagnostics${qs ? `?${qs}` : ''}`)
+  },
+  summary: (args?: { hours?: number; companyId?: number; strategy?: string; domain?: string }) => {
+    const params = new URLSearchParams()
+    if (args?.hours) params.set('hours', String(args.hours))
+    if (args?.companyId) params.set('company_id', String(args.companyId))
+    if (args?.strategy) params.set('strategy', args.strategy)
+    if (args?.domain) params.set('domain', args.domain)
+    const qs = params.toString()
+    return request<CrawlDiagnosticsSummary>(`/crawl/diagnostics/summary${qs ? `?${qs}` : ''}`)
+  },
+  cooldowns: () => request<{ blocked_domains: Array<{ domain: string; blocked_until_epoch: number; remaining_seconds: number }> }>('/crawl/cooldowns'),
+  clearDomainCooldown: (domain: string) => request<{ cleared: boolean; domain: string }>(`/crawl/cooldowns/${encodeURIComponent(domain)}`, { method: 'DELETE' }),
+  clearAllCooldowns: () => request<{ cleared: boolean }>('/crawl/cooldowns', { method: 'DELETE' }),
 }

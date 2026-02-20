@@ -14,6 +14,7 @@ const AnalyticsPage = lazy(() => import('./modules/analytics/AnalyticsPage').the
 const ChangesCenterPage = lazy(() => import('./modules/changes/ChangesCenterPage').then((m) => ({ default: m.ChangesCenterPage })))
 const EmailAlertsPage = lazy(() => import('./modules/alerts/EmailAlertsPage').then((m) => ({ default: m.EmailAlertsPage })))
 const SystemSettingsPage = lazy(() => import('./modules/settings/SystemSettingsPage').then((m) => ({ default: m.SystemSettingsPage })))
+const CrawlerOpsPage = lazy(() => import('./modules/crawler/CrawlerOpsPage').then((m) => ({ default: m.CrawlerOpsPage })))
 
 type AppModule =
   | 'DASHBOARD'
@@ -26,6 +27,7 @@ type AppModule =
   | 'CHANGES'
   | 'ALERTS'
   | 'SETTINGS'
+  | 'CRAWLER'
 
 function renderModule(module: AppModule) {
   switch (module) {
@@ -49,6 +51,8 @@ function renderModule(module: AppModule) {
       return <EmailAlertsPage />
     case 'SETTINGS':
       return <SystemSettingsPage />
+    case 'CRAWLER':
+      return <CrawlerOpsPage />
   }
 }
 
@@ -138,6 +142,14 @@ export default function App() {
             }`}
           >
             Settings
+          </button>
+          <button
+            onClick={() => setModule('CRAWLER')}
+            className={`rounded-md px-3 py-1 text-sm font-semibold ${
+              module === 'CRAWLER' ? 'bg-accent text-slate-950' : 'bg-slate-800 text-slate-200'
+            }`}
+          >
+            Crawler Ops
           </button>
         </div>
       </nav>

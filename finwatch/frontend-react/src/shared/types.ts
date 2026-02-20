@@ -230,3 +230,34 @@ export type AnalyticsDocChangeType = Array<{
   change_type: string
   count: number
 }>
+
+export type CrawlDiagnosticRecord = {
+  id: number
+  company_id?: number | null
+  company_name?: string | null
+  domain?: string | null
+  strategy?: string | null
+  page_url?: string | null
+  status_code?: number | null
+  blocked: boolean
+  error_message?: string | null
+  retry_count?: number | null
+  duration_ms?: number | null
+  created_at?: string | null
+}
+
+export type CrawlDiagnosticsSummary = {
+  window_hours: number
+  total_requests: number
+  blocked_requests: number
+  error_requests: number
+  avg_duration_ms: number
+  p95_duration_ms: number
+  unique_domains: number
+  unique_companies: number
+  active_domain_cooldowns: number
+  strategy_breakdown: Array<{
+    strategy: string
+    count: number
+  }>
+}

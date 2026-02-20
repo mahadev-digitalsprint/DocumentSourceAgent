@@ -28,6 +28,7 @@ class Company(Base):
     page_snapshots = relationship("PageSnapshot", back_populates="company", cascade="all, delete-orphan")
     page_changes = relationship("PageChange", back_populates="company", cascade="all, delete-orphan")
     errors = relationship("ErrorLog", back_populates="company", cascade="all, delete-orphan")
+    crawl_diagnostics = relationship("CrawlDiagnostic", back_populates="company", cascade="all, delete-orphan")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -194,7 +195,28 @@ class SystemSetting(Base):
 
 
 # -----------------------------------------------------------------------------
-# 10. Job Runs (operational history for queued/direct executions)
+# 10. Crawl Diagnostics (operational crawl telemetry)
+# -----------------------------------------------------------------------------
+class CrawlDiagnostic(Base):
+    __tablename__ = "crawl_diagnostics"
+
+    id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey("companies.id", ondelete="SET NULL"), nullable=True)
+    domain = Column(String(255), nullable=True, index=True)
+    strategy = Column(String(50), nullable=True)
+    page_url = Column(Text, nullable=True)
+    status_code = Column(Integer, nullable=True)
+    blocked = Column(Boolean, default=False)
+    error_message = Column(Text, nullable=True)
+    retry_count = Column(Integer, default=0)
+    duration_ms = Column(Integer, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+
+    company = relationship("Company", back_populates="crawl_diagnostics")
+
+
+# -----------------------------------------------------------------------------
+# 11. Job Runs (operational history for queued/direct executions)
 # -----------------------------------------------------------------------------
 class JobRun(Base):
     __tablename__ = "job_runs"

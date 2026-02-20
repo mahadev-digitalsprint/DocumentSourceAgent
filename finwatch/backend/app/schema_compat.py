@@ -4,6 +4,7 @@ from __future__ import annotations
 from sqlalchemy import inspect, text
 
 from app.database import engine
+from app.models import Base
 
 
 def ensure_runtime_schema_compatibility() -> None:
@@ -24,6 +25,9 @@ def ensure_runtime_schema_compatibility() -> None:
             with engine.begin() as conn:
                 for stmt in statements:
                     conn.execute(text(stmt))
+
+    if "crawl_diagnostics" not in tables and "crawl_diagnostics" in Base.metadata.tables:
+        Base.metadata.tables["crawl_diagnostics"].create(bind=engine, checkfirst=True)
 
     if "document_registry" in tables:
         columns = {column["name"] for column in inspector.get_columns("document_registry")}

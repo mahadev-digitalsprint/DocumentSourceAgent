@@ -9,7 +9,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import text
 
 from app import models
-from app.api import alerts, analytics, companies, documents, jobs, settings as settings_router, webwatch
+from app.api import alerts, analytics, companies, crawl, documents, jobs, settings as settings_router, webwatch
 from app.config import get_settings
 from app.database import SessionLocal, engine
 from app.migration import ensure_schema_at_head
@@ -36,6 +36,7 @@ app.include_router(companies.router, prefix="/api/companies", tags=["Companies"]
 app.include_router(jobs.router, prefix="/api/jobs", tags=["Jobs"])
 app.include_router(documents.router, prefix="/api/documents", tags=["Documents"])
 app.include_router(webwatch.router, prefix="/api/webwatch", tags=["WebWatch"])
+app.include_router(crawl.router, prefix="/api/crawl", tags=["Crawl"])
 app.include_router(alerts.router, prefix="/api/alerts", tags=["Email Alerts"])
 app.include_router(settings_router.router, prefix="/api/settings", tags=["Settings"])
 app.include_router(analytics.router, prefix="/api/analytics", tags=["Analytics"])

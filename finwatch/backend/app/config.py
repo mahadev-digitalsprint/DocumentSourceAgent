@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     crawler_mode: str = "auto"  # auto|local|api
     enable_crawl4ai: bool = True
     max_crawl_pages: int = 200
+    crawl_domain_delay_seconds: float = 0.4
+    crawl_block_cooldown_seconds: int = 300
 
     # Database
     # database_url is preferred for local-first deployments.

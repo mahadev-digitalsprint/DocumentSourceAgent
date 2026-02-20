@@ -37,6 +37,7 @@ class MigrationSafetyTests(unittest.TestCase):
                 tables = set(inspector.get_table_names())
                 self.assertIn("alembic_version", tables)
                 self.assertIn("job_runs", tables)
+                self.assertIn("crawl_diagnostics", tables)
                 columns = {column["name"] for column in inspector.get_columns("job_runs")}
                 self.assertIn("duration_ms", columns)
                 self.assertIn("items_processed", columns)
