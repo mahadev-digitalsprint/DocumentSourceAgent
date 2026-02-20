@@ -1,6 +1,7 @@
 import type {
   AnalyticsChangeTrend,
   AnalyticsCompanyActivity,
+  AnalyticsDocChangeType,
   AnalyticsDocTypeDistribution,
   AnalyticsJobRuns,
   AnalyticsOverview,
@@ -142,4 +143,9 @@ export const analyticsApi = {
     return request<AnalyticsChangeTrend>(`/analytics/change-trend?${params.toString()}`)
   },
   jobRuns: (hours = 24) => request<AnalyticsJobRuns>(`/analytics/job-runs?hours=${hours}`),
+  docChangeTypes: (hours = 168, companyId?: number) => {
+    const params = new URLSearchParams({ hours: String(hours) })
+    if (companyId) params.set('company_id', String(companyId))
+    return request<AnalyticsDocChangeType>(`/analytics/doc-change-types?${params.toString()}`)
+  },
 }

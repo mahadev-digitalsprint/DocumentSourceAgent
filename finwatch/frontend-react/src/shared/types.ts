@@ -203,3 +203,8 @@ export type AnalyticsJobRuns = {
   window_hours: number
   status_breakdown: Array<{ status: string; count: number }>
 }
+
+export type AnalyticsDocChangeType = Array<{
+  change_type: string
+  count: number
+}>

@@ -14,105 +14,98 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import { dashboardApi } from '../../shared/api'
+import { analyticsApi } from '../../shared/api'
 import { SectionCard } from '../dashboard/SectionCard'
-
-function toDateBucket(input: string) {
-  const parsed = new Date(input)
-  if (Number.isNaN(parsed.getTime())) return 'unknown'
-  return parsed.toISOString().slice(0, 10)
-}
 
 export function AnalyticsPage() {
   const [hours, setHours] = useState(168)
+  const trendDays = Math.max(1, Math.ceil(hours / 24))
 
-  const companiesQuery = useQuery({
-    queryKey: ['companies'],
-    queryFn: dashboardApi.companies,
+  const overviewQuery = useQuery({
+    queryKey: ['analyticsOverview', hours],
+    queryFn: () => analyticsApi.overview(hours),
   })
-  const documentsQuery = useQuery({
-    queryKey: ['documents'],
-    queryFn: dashboardApi.documents,
+  const docTypeQuery = useQuery({
+    queryKey: ['analyticsDocTypeDistribution'],
+    queryFn: () => analyticsApi.docTypeDistribution(100),
   })
-  const docChangesQuery = useQuery({
-    queryKey: ['docChanges', hours],
-    queryFn: () => dashboardApi.documentChanges(hours),
+  const companyActivityQuery = useQuery({
+    queryKey: ['analyticsCompanyActivity', hours],
+    queryFn: () => analyticsApi.companyActivity(hours, 10),
   })
-  const pageChangesQuery = useQuery({
-    queryKey: ['pageChanges', hours],
-    queryFn: () => dashboardApi.pageChanges(hours),
+  const trendQuery = useQuery({
+    queryKey: ['analyticsChangeTrend', trendDays],
+    queryFn: () => analyticsApi.changeTrend(trendDays),
+  })
+  const docChangeTypeQuery = useQuery({
+    queryKey: ['analyticsDocChangeTypes', hours],
+    queryFn: () => analyticsApi.docChangeTypes(hours),
   })
 
-  const companies = companiesQuery.data ?? []
-  const documents = documentsQuery.data ?? []
-  const docChanges = docChangesQuery.data ?? []
-  const pageChanges = pageChangesQuery.data ?? []
-
-  const companyNameById = useMemo(() => new Map(companies.map((c) => [c.id, c.company_name])), [companies])
+  const overview = overviewQuery.data
+  const docTypeDistribution = docTypeQuery.data ?? []
+  const companyActivity = companyActivityQuery.data ?? []
+  const trend = trendQuery.data ?? []
+  const docChangeTypes = docChangeTypeQuery.data ?? []
 
   const categoryDistribution = useMemo(() => {
-    const financial = documents.filter((d) => (d.doc_type || '').startsWith('FINANCIAL')).length
-    const nonFinancial = documents.filter((d) => (d.doc_type || '').startsWith('NON_FINANCIAL')).length
-    const unknown = Math.max(0, documents.length - financial - nonFinancial)
+    const financial = docTypeDistribution
+      .filter((item) => (item.doc_type || '').startsWith('FINANCIAL'))
+      .reduce((acc, item) => acc + item.count, 0)
+    const nonFinancial = docTypeDistribution
+      .filter((item) => (item.doc_type || '').startsWith('NON_FINANCIAL'))
+      .reduce((acc, item) => acc + item.count, 0)
+    const total = overview?.documents_total ?? financial + nonFinancial
+    const unknown = Math.max(0, total - financial - nonFinancial)
     return [
       { name: 'Financial', value: financial },
       { name: 'Non-Financial', value: nonFinancial },
       { name: 'Unknown', value: unknown },
     ]
-  }, [documents])
+  }, [docTypeDistribution, overview?.documents_total])
 
-  const topSubtypeData = useMemo(() => {
-    const counts = new Map<string, number>()
-    for (const doc of documents) {
-      const parts = (doc.doc_type || 'UNKNOWN').split('|')
-      const subtype = parts.length > 1 ? parts[1] : parts[0]
-      counts.set(subtype, (counts.get(subtype) ?? 0) + 1)
-    }
-    return Array.from(counts.entries())
-      .map(([name, count]) => ({ name, count }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 10)
-  }, [documents])
+  const topSubtypeData = useMemo(
+    () =>
+      docTypeDistribution
+        .map((item) => {
+          const parts = (item.doc_type || 'UNKNOWN').split('|')
+          return { name: parts.length > 1 ? parts[1] : parts[0], count: item.count }
+        })
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 10),
+    [docTypeDistribution],
+  )
 
-  const companyDocData = useMemo(() => {
-    const counts = new Map<string, number>()
-    for (const doc of documents) {
-      const company = companyNameById.get(doc.company_id) ?? `#${doc.company_id}`
-      counts.set(company, (counts.get(company) ?? 0) + 1)
-    }
-    return Array.from(counts.entries())
-      .map(([name, count]) => ({ name, count }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 10)
-  }, [documents, companyNameById])
+  const companyDocData = useMemo(
+    () =>
+      companyActivity
+        .map((item) => ({ name: item.company_name, count: item.documents_total }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 10),
+    [companyActivity],
+  )
 
-  const trendData = useMemo(() => {
-    const map = new Map<string, { date: string; docChanges: number; pageChanges: number }>()
-    for (const change of docChanges) {
-      const day = toDateBucket(change.detected_at)
-      const row = map.get(day) ?? { date: day, docChanges: 0, pageChanges: 0 }
-      row.docChanges += 1
-      map.set(day, row)
-    }
-    for (const change of pageChanges) {
-      const day = toDateBucket(change.detected_at)
-      const row = map.get(day) ?? { date: day, docChanges: 0, pageChanges: 0 }
-      row.pageChanges += 1
-      map.set(day, row)
-    }
-    return Array.from(map.values()).sort((a, b) => a.date.localeCompare(b.date))
-  }, [docChanges, pageChanges])
+  const trendData = useMemo(
+    () =>
+      trend.map((item) => ({
+        date: item.date,
+        docChanges: item.document_changes,
+        pageChanges: item.page_changes,
+      })),
+    [trend],
+  )
 
-  const changeTypeMix = useMemo(() => {
-    const counts = new Map<string, number>()
-    for (const ch of docChanges) {
-      counts.set(ch.change_type, (counts.get(ch.change_type) ?? 0) + 1)
-    }
-    return Array.from(counts.entries()).map(([name, count]) => ({ name, count }))
-  }, [docChanges])
+  const changeTypeMix = useMemo(
+    () => docChangeTypes.map((item) => ({ name: item.change_type, count: item.count })),
+    [docChangeTypes],
+  )
 
-  const extractedCount = documents.filter((d) => d.metadata_extracted).length
-  const pendingCount = Math.max(0, documents.length - extractedCount)
+  const totalDocuments = overview?.documents_total ?? 0
+  const extractedCount = overview?.documents_metadata_extracted ?? 0
+  const pendingCount = Math.max(0, totalDocuments - extractedCount)
+  const totalCompanies = overview?.companies_total ?? 0
+  const docChanges = overview?.document_changes ?? 0
+  const pageChanges = overview?.page_changes ?? 0
 
   return (
     <main className="mx-auto min-h-screen max-w-7xl px-4 py-6 md:px-8">
@@ -138,19 +131,19 @@ export function AnalyticsPage() {
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <article className="rounded-xl border border-slate-700/70 bg-panel/90 p-4 shadow-panel">
           <p className="text-xs uppercase tracking-wider text-slate-400">Companies</p>
-          <p className="mt-2 text-3xl font-semibold text-slate-100">{companies.length}</p>
+          <p className="mt-2 text-3xl font-semibold text-slate-100">{totalCompanies}</p>
         </article>
         <article className="rounded-xl border border-slate-700/70 bg-panel/90 p-4 shadow-panel">
           <p className="text-xs uppercase tracking-wider text-slate-400">Documents</p>
-          <p className="mt-2 text-3xl font-semibold text-accent">{documents.length}</p>
+          <p className="mt-2 text-3xl font-semibold text-accent">{totalDocuments}</p>
         </article>
         <article className="rounded-xl border border-slate-700/70 bg-panel/90 p-4 shadow-panel">
           <p className="text-xs uppercase tracking-wider text-slate-400">Doc Changes ({hours}h)</p>
-          <p className="mt-2 text-3xl font-semibold text-warn">{docChanges.length}</p>
+          <p className="mt-2 text-3xl font-semibold text-warn">{docChanges}</p>
         </article>
         <article className="rounded-xl border border-slate-700/70 bg-panel/90 p-4 shadow-panel">
           <p className="text-xs uppercase tracking-wider text-slate-400">Page Changes ({hours}h)</p>
-          <p className="mt-2 text-3xl font-semibold text-cyan-300">{pageChanges.length}</p>
+          <p className="mt-2 text-3xl font-semibold text-cyan-300">{pageChanges}</p>
         </article>
       </section>
 

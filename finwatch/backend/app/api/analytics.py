@@ -163,3 +163,26 @@ def job_runs(
         "window_hours": hours,
         "status_breakdown": [{"status": row[0], "count": int(row[1] or 0)} for row in rows],
     }
+
+
+@router.get("/doc-change-types")
+def doc_change_types(
+    hours: int = Query(default=168, ge=1, le=24 * 90),
+    company_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    cutoff = datetime.utcnow() - timedelta(hours=hours)
+
+    query = db.query(ChangeLog.change_type, func.count(ChangeLog.id).label("count")).join(
+        DocumentRegistry, ChangeLog.document_id == DocumentRegistry.id
+    )
+    if company_id is not None:
+        query = query.filter(DocumentRegistry.company_id == company_id)
+
+    rows = (
+        query.filter(ChangeLog.detected_at >= cutoff)
+        .group_by(ChangeLog.change_type)
+        .order_by(func.count(ChangeLog.id).desc())
+        .all()
+    )
+    return [{"change_type": row[0] or "UNKNOWN", "count": int(row[1] or 0)} for row in rows]
