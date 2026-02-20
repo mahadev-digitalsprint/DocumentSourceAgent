@@ -41,6 +41,10 @@ class MigrationSafetyTests(unittest.TestCase):
                 self.assertIn("duration_ms", columns)
                 self.assertIn("items_processed", columns)
                 self.assertIn("error_count", columns)
+                doc_columns = {column["name"] for column in inspector.get_columns("document_registry")}
+                self.assertIn("classifier_confidence", doc_columns)
+                self.assertIn("classifier_version", doc_columns)
+                self.assertIn("needs_review", doc_columns)
                 engine.dispose()
             finally:
                 if original_database_url is None:

@@ -5,11 +5,16 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
 import json
+from pydantic import BaseModel
 
 from app.database import get_db
 from app.models import DocumentRegistry, MetadataRecord, ChangeLog, ErrorLog, Company
 
 router = APIRouter()
+
+
+class ReviewUpdateIn(BaseModel):
+    needs_review: bool = False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -44,6 +49,9 @@ def list_documents(
             "is_scanned": d.is_scanned,
             "language": d.language,
             "metadata_extracted": d.metadata_extracted,
+            "classifier_confidence": d.classifier_confidence,
+            "classifier_version": d.classifier_version,
+            "needs_review": d.needs_review,
             "local_path": d.local_path,
             "last_checked": str(d.last_checked or ""),
             "created_at": str(d.created_at or ""),
@@ -171,6 +179,46 @@ def get_error_logs(company_id: Optional[int] = None, db: Session = Depends(get_d
         }
         for e in q.order_by(ErrorLog.created_at.desc()).limit(200).all()
     ]
+
+
+@router.get("/review/queue")
+def review_queue(
+    company_id: Optional[int] = None,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+):
+    q = db.query(DocumentRegistry).filter(DocumentRegistry.needs_review == True)
+    if company_id:
+        q = q.filter(DocumentRegistry.company_id == company_id)
+    docs = q.order_by(DocumentRegistry.created_at.desc()).limit(limit).all()
+    return [
+        {
+            "id": d.id,
+            "company_id": d.company_id,
+            "document_url": d.document_url,
+            "doc_type": d.doc_type,
+            "status": d.status,
+            "classifier_confidence": d.classifier_confidence,
+            "classifier_version": d.classifier_version,
+            "needs_review": d.needs_review,
+            "created_at": str(d.created_at or ""),
+        }
+        for d in docs
+    ]
+
+
+@router.patch("/review/{doc_id}")
+def update_review_flag(doc_id: int, body: ReviewUpdateIn, db: Session = Depends(get_db)):
+    doc = db.get(DocumentRegistry, doc_id)
+    if not doc:
+        raise HTTPException(404, "Document not found")
+    doc.needs_review = body.needs_review
+    db.commit()
+    return {
+        "id": doc.id,
+        "needs_review": doc.needs_review,
+        "classifier_confidence": doc.classifier_confidence,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -20,6 +20,9 @@ export type DocumentRecord = {
   doc_type: string
   status: 'NEW' | 'UNCHANGED' | 'UPDATED' | 'FAILED' | string
   metadata_extracted: boolean
+  classifier_confidence?: number | null
+  classifier_version?: string | null
+  needs_review?: boolean
   created_at: string
 }
 

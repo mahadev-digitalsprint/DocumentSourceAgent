@@ -3,7 +3,7 @@ All SQLAlchemy ORM models — 9 tables defining the complete data schema.
 """
 from sqlalchemy import (
     Column, Integer, String, Text, Boolean,
-    DateTime, ForeignKey, BigInteger, JSON,
+    DateTime, ForeignKey, BigInteger, JSON, Float,
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -51,6 +51,9 @@ class DocumentRegistry(Base):
     status = Column(String(50), default="NEW")  # NEW|UNCHANGED|UPDATED|FAILED
     metadata_extracted = Column(Boolean, default=False)
     first_page_text = Column(Text)               # cached for classify/display
+    classifier_confidence = Column(Float, nullable=True)
+    classifier_version = Column(String(50), nullable=True)
+    needs_review = Column(Boolean, default=False)
     last_checked = Column(DateTime)
     created_at = Column(DateTime, server_default=func.now())
 

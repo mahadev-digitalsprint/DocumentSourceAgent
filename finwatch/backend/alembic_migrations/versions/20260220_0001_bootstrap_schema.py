@@ -50,15 +50,38 @@ def _ensure_job_run_columns(bind):
         op.add_column("job_runs", sa.Column("error_count", sa.Integer(), nullable=True))
 
 
+def _ensure_document_registry_columns(bind):
+    existing_tables = _table_names(bind)
+    if "document_registry" not in existing_tables:
+        return
+
+    columns = _column_names(bind, "document_registry")
+    if "classifier_confidence" not in columns:
+        op.add_column("document_registry", sa.Column("classifier_confidence", sa.Float(), nullable=True))
+    if "classifier_version" not in columns:
+        op.add_column("document_registry", sa.Column("classifier_version", sa.String(length=50), nullable=True))
+    if "needs_review" not in columns:
+        op.add_column("document_registry", sa.Column("needs_review", sa.Boolean(), nullable=True))
+
+
 def upgrade() -> None:
     bind = op.get_bind()
     _ensure_tables(bind)
     _ensure_job_run_columns(bind)
+    _ensure_document_registry_columns(bind)
 
 
 def downgrade() -> None:
     bind = op.get_bind()
     existing_tables = _table_names(bind)
+    if "document_registry" in existing_tables:
+        columns = _column_names(bind, "document_registry")
+        if "needs_review" in columns:
+            op.drop_column("document_registry", "needs_review")
+        if "classifier_version" in columns:
+            op.drop_column("document_registry", "classifier_version")
+        if "classifier_confidence" in columns:
+            op.drop_column("document_registry", "classifier_confidence")
     if "job_runs" in existing_tables:
         columns = _column_names(bind, "job_runs")
         if "error_count" in columns:

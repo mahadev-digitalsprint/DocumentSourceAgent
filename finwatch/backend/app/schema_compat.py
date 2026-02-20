@@ -24,3 +24,17 @@ def ensure_runtime_schema_compatibility() -> None:
             with engine.begin() as conn:
                 for stmt in statements:
                     conn.execute(text(stmt))
+
+    if "document_registry" in tables:
+        columns = {column["name"] for column in inspector.get_columns("document_registry")}
+        statements = []
+        if "classifier_confidence" not in columns:
+            statements.append("ALTER TABLE document_registry ADD COLUMN classifier_confidence FLOAT")
+        if "classifier_version" not in columns:
+            statements.append("ALTER TABLE document_registry ADD COLUMN classifier_version VARCHAR(50)")
+        if "needs_review" not in columns:
+            statements.append("ALTER TABLE document_registry ADD COLUMN needs_review BOOLEAN")
+        if statements:
+            with engine.begin() as conn:
+                for stmt in statements:
+                    conn.execute(text(stmt))
