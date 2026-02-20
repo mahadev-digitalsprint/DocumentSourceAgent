@@ -1,297 +1,375 @@
 """
 M7 — Excel Writer Agent
-Generates a single Excel workbook per company with 5 sheets:
-  Sheet 1: Metadata        — 10 LLM-extracted fields per document
-  Sheet 2: 24h Changes     — New/Updated/Removed documents in last 24h
-  Sheet 3: WebWatch        — Page adds/deletes/updates/new PDF links
-  Sheet 4: Error Log       — All failures logged during this run
-  Sheet 5: Summary         — Aggregate statistics
+========================
+Generates a 7-sheet Excel workbook summarising all pipeline results.
 
-Output: downloads/{slug}/metadata_{slug}_{YYYY-MM-DD}.xlsx
+Sheets:
+  1. Summary         — overall stats: companies, docs, changes
+  2. Financial Docs  — all financial PDFs with metadata (revenue, profit, EPS, etc.)
+  3. Non-Financial   — non-financial PDFs with metadata (topics, scope, etc.)
+  4. 24h Changes     — all doc & page changes in last 24 hours
+  5. WebWatch        — page-level additions/deletions/content changes
+  6. Metadata Raw    — full LLM JSON dump for all docs
+  7. Errors          — any pipeline errors for debugging
+
+File is saved to BASE_DOWNLOAD_PATH/reports/finwatch_<date>.xlsx
 """
 import logging
 import os
 from datetime import datetime, timedelta
-from pathlib import Path
-from typing import Any, Dict
+from typing import Dict, List
 
 import pandas as pd
-from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
-from openpyxl.utils.dataframe import dataframe_to_rows
+import openpyxl
 
+from app.config import get_settings
 from app.database import SessionLocal
-from app.models import Company, DocumentRegistry, MetadataRecord, ChangeLog, PageChange, ErrorLog
+from app.models import (
+    Company, DocumentRegistry, MetadataRecord,
+    ChangeLog, PageChange, ErrorLog
+)
 from app.workflow.state import PipelineState
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
-# Styles
-HEADER_BG = "1E3A5F"
-ALT_ROW_BG = "F0F4F8"
-NEW_COL = "22C55E"
-UPDATED_COL = "F59E0B"
-DELETED_COL = "EF4444"
-
-thin = Side(border_style="thin", color="CBD5E1")
-BORDER = Border(left=thin, right=thin, top=thin, bottom=thin)
+# ── Color palette ─────────────────────────────────────────────────────────────
+COLOR_HEADER_FIN     = "1B4F72"   # dark blue  — financial sheets
+COLOR_HEADER_NONFIN  = "1D6A39"   # dark green — non-financial sheets
+COLOR_HEADER_CHANGE  = "7B241C"   # dark red   — changes sheet
+COLOR_HEADER_NEUTRAL = "2C3E50"   # dark grey  — neutral sheets
+COLOR_ALT_ROW        = "EBF5FB"   # light blue alt row
 
 
 def excel_agent(state: PipelineState) -> dict:
-    """LangGraph node — builds the Excel report for one company."""
+    """LangGraph node — build and save the Excel workbook."""
     db = SessionLocal()
     try:
-        company = db.query(Company).get(state["company_id"])
-        if not company:
-            return {"excel_path": None}
+        report_dir = os.path.join(
+            settings.base_download_path.replace("/app/downloads", "downloads"),
+            "reports"
+        )
+        os.makedirs(report_dir, exist_ok=True)
+        date_str = datetime.utcnow().strftime("%Y%m%d_%H%M")
+        out_path  = os.path.join(report_dir, f"finwatch_{date_str}.xlsx")
 
-        xlsx_path = _build_excel(db, company, state["base_folder"])
-        logger.info(f"[M7-EXCEL] Saved: {xlsx_path}")
-        return {"excel_path": xlsx_path}
-    except Exception as e:
-        logger.error(f"[M7-EXCEL] Failed: {e}")
-        return {"excel_path": None}
+        wb = openpyxl.Workbook()
+        wb.remove(wb.active)  # remove default sheet
+
+        _sheet_summary(wb, db)
+        _sheet_financial(wb, db)
+        _sheet_non_financial(wb, db)
+        _sheet_24h_changes(wb, db)
+        _sheet_webwatch(wb, db)
+        _sheet_metadata_raw(wb, db)
+        _sheet_errors(wb, db)
+
+        wb.save(out_path)
+        logger.info(f"[M7-EXCEL] Saved: {out_path}")
+        return {"excel_path": out_path}
     finally:
         db.close()
 
 
-def _build_excel(db, company: Company, base_folder: str) -> str:
-    folder = os.path.join(base_folder, company.company_slug)
-    Path(folder).mkdir(parents=True, exist_ok=True)
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    path = os.path.join(folder, f"metadata_{company.company_slug}_{today}.xlsx")
-
-    wb = Workbook()
-
-    _sheet_metadata(wb, db, company, is_first=True)
-    _sheet_24h_changes(wb, db, company)
-    _sheet_webwatch(wb, db, company)
-    _sheet_errors(wb, db, company)
-    _sheet_summary(wb, db, company)
-
-    wb.save(path)
-    return path
-
-
 # ─────────────────────────────────────────────────────────────────────────────
-# Sheet 1: Metadata
+# Sheet builders
 # ─────────────────────────────────────────────────────────────────────────────
-def _sheet_metadata(wb: Workbook, db, company: Company, is_first=False):
-    ws = wb.active if is_first else wb.create_sheet("Metadata")
-    ws.title = "Metadata"
 
-    headers = [
-        "Filename", "URL", "Document Type", "Headline",
-        "Filing Date", "Period End Date", "Language",
-        "Filing Data Source", "Income Statement",
-        "Preliminary Doc", "Note Flag", "Audit Flag",
-        "Status", "File Size (KB)", "Scanned PDF", "Last Checked",
-    ]
-    _write_header(ws, headers)
-
-    docs = db.query(DocumentRegistry).filter(DocumentRegistry.company_id == company.id).all()
-    for i, doc in enumerate(docs, start=2):
-        m: MetadataRecord = doc.metadata
-        row = [
-            os.path.basename(doc.local_path or ""),
-            doc.document_url,
-            doc.doc_type,
-            m.headline if m else "",
-            m.filing_date if m else "",
-            m.period_end_date if m else "",
-            doc.language or "",
-            m.filing_data_source if m else "",
-            _bool(m.income_statement if m else None),
-            _bool(m.preliminary_document if m else None),
-            _bool(m.note_flag if m else None),
-            _bool(m.audit_flag if m else None),
-            doc.status,
-            round(doc.file_size_bytes / 1024, 1) if doc.file_size_bytes else "",
-            "Yes" if doc.is_scanned else "No",
-            str(doc.last_checked)[:19] if doc.last_checked else "",
-        ]
-        ws.append(row)
-        # Colour status cell
-        status_cell = ws.cell(row=i, column=headers.index("Status") + 1)
-        colour_map = {"NEW": NEW_COL, "UPDATED": UPDATED_COL, "FAILED": DELETED_COL}
-        if doc.status in colour_map:
-            status_cell.fill = PatternFill("solid", fgColor=colour_map[doc.status])
-
-        if i % 2 == 0:
-            _apply_alt_row(ws, i, len(headers))
-
-    _auto_width(ws)
-    ws.freeze_panes = "A2"
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Sheet 2: 24h Changes
-# ─────────────────────────────────────────────────────────────────────────────
-def _sheet_24h_changes(wb: Workbook, db, company: Company):
-    ws = wb.create_sheet("24h Changes")
+def _sheet_summary(wb, db):
+    ws = wb.create_sheet("📊 Summary")
     cutoff = datetime.utcnow() - timedelta(hours=24)
 
-    docs = db.query(DocumentRegistry).filter(DocumentRegistry.company_id == company.id).all()
-    doc_ids = [d.id for d in docs]
+    companies   = db.query(Company).filter(Company.active == True).count()
+    total_docs  = db.query(DocumentRegistry).count()
+    fin_docs    = db.query(DocumentRegistry).filter(DocumentRegistry.doc_type.like("FINANCIAL%")).count()
+    nonfin_docs = db.query(DocumentRegistry).filter(DocumentRegistry.doc_type.like("NON_FINANCIAL%")).count()
+    new_24h     = db.query(ChangeLog).filter(ChangeLog.detected_at >= cutoff).count()
+    errors_24h  = db.query(ErrorLog).filter(ErrorLog.created_at >= cutoff).count()
+
+    rows = [
+        ("🏢 Active Companies",         companies),
+        ("📄 Total Documents",           total_docs),
+        ("💰 Financial Documents",        fin_docs),
+        ("📋 Non-Financial Documents",    nonfin_docs),
+        ("🔔 Changes (last 24h)",         new_24h),
+        ("❌ Errors (last 24h)",          errors_24h),
+        ("📅 Report Generated",           datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")),
+    ]
+
+    _write_header(ws, ["Metric", "Value"], COLOR_HEADER_NEUTRAL)
+    for i, (metric, value) in enumerate(rows, start=2):
+        ws.cell(i, 1, metric)
+        ws.cell(i, 2, str(value))
+        if i % 2 == 0:
+            for col in range(1, 3):
+                ws.cell(i, col).fill = PatternFill("solid", fgColor=COLOR_ALT_ROW)
+
+    ws.column_dimensions["A"].width = 35
+    ws.column_dimensions["B"].width = 25
+
+
+def _sheet_financial(wb, db):
+    ws = wb.create_sheet("💰 Financial Docs")
+    headers = [
+        "Company", "Document Type", "Headline", "Filing Date",
+        "Period End", "Fiscal Year", "Fiscal Quarter", "Currency",
+        "Revenue", "Net Profit", "EBITDA", "EPS",
+        "Audit Status", "Preliminary", "Language", "URL", "Local Path",
+    ]
+    _write_header(ws, headers, COLOR_HEADER_FIN)
+
+    docs = (
+        db.query(DocumentRegistry, MetadataRecord, Company)
+        .join(Company, DocumentRegistry.company_id == Company.id)
+        .outerjoin(MetadataRecord, MetadataRecord.document_id == DocumentRegistry.id)
+        .filter(DocumentRegistry.doc_type.like("FINANCIAL%"))
+        .order_by(Company.company_name, DocumentRegistry.created_at.desc())
+        .all()
+    )
+
+    for i, (doc, meta, company) in enumerate(docs, start=2):
+        raw = meta.raw_llm_response if meta and meta.raw_llm_response else {}
+        row = [
+            company.company_name,
+            (doc.doc_type or "").split("|")[-1],
+            meta.headline if meta else "",
+            meta.filing_date if meta else "",
+            meta.period_end_date if meta else "",
+            raw.get("fiscal_year", ""),
+            raw.get("fiscal_quarter", ""),
+            raw.get("currency", ""),
+            raw.get("revenue", ""),
+            raw.get("net_profit", ""),
+            raw.get("ebitda", ""),
+            raw.get("eps", ""),
+            raw.get("audit_status", ""),
+            str(raw.get("is_preliminary", "")),
+            meta.language if meta else "",
+            doc.document_url,
+            doc.local_path or "",
+        ]
+        for j, val in enumerate(row, start=1):
+            ws.cell(i, j, val)
+        if i % 2 == 0:
+            for col in range(1, len(headers)+1):
+                ws.cell(i, col).fill = PatternFill("solid", fgColor=COLOR_ALT_ROW)
+
+    _auto_width(ws, headers)
+
+
+def _sheet_non_financial(wb, db):
+    ws = wb.create_sheet("📋 Non-Financial Docs")
+    headers = [
+        "Company", "Document Type", "Headline", "Filing Date",
+        "Regulatory Body", "Compliance Period", "Document Scope",
+        "Target Audience", "Key Topics", "Key Findings",
+        "Certifications", "Language", "URL",
+    ]
+    _write_header(ws, headers, COLOR_HEADER_NONFIN)
+
+    docs = (
+        db.query(DocumentRegistry, MetadataRecord, Company)
+        .join(Company, DocumentRegistry.company_id == Company.id)
+        .outerjoin(MetadataRecord, MetadataRecord.document_id == DocumentRegistry.id)
+        .filter(DocumentRegistry.doc_type.like("NON_FINANCIAL%"))
+        .order_by(Company.company_name, DocumentRegistry.created_at.desc())
+        .all()
+    )
+
+    for i, (doc, meta, company) in enumerate(docs, start=2):
+        raw = meta.raw_llm_response if meta and meta.raw_llm_response else {}
+        topics = raw.get("key_topics", [])
+        certs  = raw.get("certifications", [])
+        row = [
+            company.company_name,
+            (doc.doc_type or "").split("|")[-1],
+            meta.headline if meta else "",
+            meta.filing_date if meta else "",
+            raw.get("regulatory_body", ""),
+            raw.get("compliance_period", ""),
+            raw.get("document_scope", ""),
+            raw.get("target_audience", ""),
+            ", ".join(topics) if isinstance(topics, list) else str(topics),
+            raw.get("key_findings", ""),
+            ", ".join(certs) if isinstance(certs, list) else str(certs),
+            meta.language if meta else "",
+            doc.document_url,
+        ]
+        for j, val in enumerate(row, start=1):
+            ws.cell(i, j, val)
+        if i % 2 == 0:
+            for col in range(1, len(headers)+1):
+                ws.cell(i, col).fill = PatternFill("solid", fgColor=COLOR_ALT_ROW)
+
+    _auto_width(ws, headers)
+
+
+def _sheet_24h_changes(wb, db):
+    ws = wb.create_sheet("🔔 24h Changes")
+    cutoff = datetime.utcnow() - timedelta(hours=24)
+    headers = [
+        "Company", "Change Type", "Doc Category", "Doc Type",
+        "URL", "Old Hash", "New Hash", "Detected At",
+    ]
+    _write_header(ws, headers, COLOR_HEADER_CHANGE)
+
     changes = (
-        db.query(ChangeLog)
-        .filter(ChangeLog.document_id.in_(doc_ids), ChangeLog.detected_at >= cutoff)
+        db.query(ChangeLog, DocumentRegistry, Company)
+        .join(DocumentRegistry, ChangeLog.document_id == DocumentRegistry.id)
+        .join(Company, DocumentRegistry.company_id == Company.id)
+        .filter(ChangeLog.detected_at >= cutoff)
         .order_by(ChangeLog.detected_at.desc())
         .all()
     )
 
-    headers = ["Detected At", "Change Type", "Document Type", "Filename", "URL", "Old Hash", "New Hash"]
-    _write_header(ws, headers)
-
-    for i, c in enumerate(changes, start=2):
-        doc = c.document
-        colour_map = {"NEW": NEW_COL, "UPDATED": UPDATED_COL, "REMOVED": DELETED_COL}
+    for i, (chg, doc, company) in enumerate(changes, start=2):
+        parts = (doc.doc_type or "").split("|")
         row = [
-            str(c.detected_at)[:19],
-            c.change_type,
-            doc.doc_type if doc else "",
-            os.path.basename(doc.local_path or "") if doc else "",
-            doc.document_url if doc else "",
-            (c.old_hash or "")[:16],
-            (c.new_hash or "")[:16],
+            company.company_name,
+            chg.change_type,
+            parts[0] if len(parts) > 1 else "UNKNOWN",
+            parts[-1],
+            doc.document_url,
+            chg.old_hash or "",
+            chg.new_hash or "",
+            str(chg.detected_at)[:19],
         ]
-        ws.append(row)
-        ct_cell = ws.cell(row=i, column=2)
-        if c.change_type in colour_map:
-            ct_cell.fill = PatternFill("solid", fgColor=colour_map[c.change_type])
+        for j, val in enumerate(row, start=1):
+            ws.cell(i, j, val)
 
-    if not changes:
-        ws.append(["No document changes in the last 24 hours"])
-
-    _auto_width(ws)
-    ws.freeze_panes = "A2"
+    _auto_width(ws, headers)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Sheet 3: WebWatch
-# ─────────────────────────────────────────────────────────────────────────────
-def _sheet_webwatch(wb: Workbook, db, company: Company):
-    ws = wb.create_sheet("WebWatch")
+def _sheet_webwatch(wb, db):
+    ws = wb.create_sheet("🌐 WebWatch")
     cutoff = datetime.utcnow() - timedelta(hours=24)
+    headers = [
+        "Company", "Page URL", "Change Type",
+        "Diff Summary", "New PDFs Found", "Detected At",
+    ]
+    _write_header(ws, headers, COLOR_HEADER_NEUTRAL)
 
-    page_changes = (
-        db.query(PageChange)
-        .filter(PageChange.company_id == company.id, PageChange.detected_at >= cutoff)
+    pchanges = (
+        db.query(PageChange, Company)
+        .join(Company, PageChange.company_id == Company.id)
+        .filter(PageChange.detected_at >= cutoff)
         .order_by(PageChange.detected_at.desc())
         .all()
     )
 
-    headers = ["Detected At", "Change Type", "Page URL", "Diff Summary", "New PDFs Linked"]
-    _write_header(ws, headers)
+    for i, (pc, company) in enumerate(pchanges, start=2):
+        new_pdfs = pc.new_pdf_urls or []
+        row = [
+            company.company_name,
+            pc.page_url,
+            pc.change_type,
+            pc.diff_summary or "",
+            len(new_pdfs),
+            str(pc.detected_at)[:19],
+        ]
+        for j, val in enumerate(row, start=1):
+            ws.cell(i, j, val)
 
-    colour_map = {
-        "PAGE_ADDED": NEW_COL,
-        "PAGE_DELETED": DELETED_COL,
-        "CONTENT_CHANGED": UPDATED_COL,
-        "NEW_DOC_LINKED": "3B82F6",
-    }
-
-    for i, p in enumerate(page_changes, start=2):
-        new_pdfs = ", ".join(p.new_pdf_urls or [])[:200]
-        ws.append([
-            str(p.detected_at)[:19],
-            p.change_type.replace("_", " "),
-            p.page_url,
-            (p.diff_summary or "")[:300],
-            new_pdfs,
-        ])
-        ct_cell = ws.cell(row=i, column=2)
-        if p.change_type in colour_map:
-            ct_cell.fill = PatternFill("solid", fgColor=colour_map[p.change_type])
-
-    if not page_changes:
-        ws.append(["No page changes in the last 24 hours"])
-
-    _auto_width(ws)
-    ws.freeze_panes = "A2"
+    _auto_width(ws, headers)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Sheet 4: Error Log
-# ─────────────────────────────────────────────────────────────────────────────
-def _sheet_errors(wb: Workbook, db, company: Company):
-    ws = wb.create_sheet("Error Log")
-    errors = db.query(ErrorLog).filter(ErrorLog.company_id == company.id).order_by(ErrorLog.created_at.desc()).all()
-    _write_header(ws, ["Timestamp", "Step", "Error Type", "Document URL", "Message"])
-    for e in errors:
-        ws.append([str(e.created_at)[:19], e.step, e.error_type, e.document_url, e.error_message])
-    if not errors:
-        ws.append(["No errors logged"])
-    _auto_width(ws)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Sheet 5: Summary
-# ─────────────────────────────────────────────────────────────────────────────
-def _sheet_summary(wb: Workbook, db, company: Company):
-    ws = wb.create_sheet("Summary")
-    cutoff = datetime.utcnow() - timedelta(hours=24)
-    docs = db.query(DocumentRegistry).filter(DocumentRegistry.company_id == company.id).all()
-    doc_ids = [d.id for d in docs]
-    changes_24h = db.query(ChangeLog).filter(
-        ChangeLog.document_id.in_(doc_ids), ChangeLog.detected_at >= cutoff
-    ).all()
-    page_changes_24h = db.query(PageChange).filter(
-        PageChange.company_id == company.id, PageChange.detected_at >= cutoff
-    ).all()
-
-    _write_header(ws, ["Metric", "Value"])
-    rows = [
-        ["Company", company.company_name],
-        ["Website", company.website_url],
-        ["Report Date", datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")],
-        ["Total Documents", len(docs)],
-        ["Annual Reports", sum(1 for d in docs if d.doc_type == "Annual Report")],
-        ["Quarterly Reports", sum(1 for d in docs if d.doc_type == "Quarterly Report")],
-        ["Financial Statements", sum(1 for d in docs if d.doc_type == "Financial Statement")],
-        ["ESG Reports", sum(1 for d in docs if d.doc_type == "ESG Report")],
-        ["Metadata Extracted", sum(1 for d in docs if d.metadata_extracted)],
-        ["Scanned PDFs", sum(1 for d in docs if d.is_scanned)],
-        ["Failed Downloads", sum(1 for d in docs if d.status == "FAILED")],
-        ["--- 24h Changes ---", ""],
-        ["New Documents (24h)", sum(1 for c in changes_24h if c.change_type == "NEW")],
-        ["Updated Documents (24h)", sum(1 for c in changes_24h if c.change_type == "UPDATED")],
-        ["Pages Added (24h)", sum(1 for p in page_changes_24h if p.change_type == "PAGE_ADDED")],
-        ["Pages Deleted (24h)", sum(1 for p in page_changes_24h if p.change_type == "PAGE_DELETED")],
-        ["Page Content Changes (24h)", sum(1 for p in page_changes_24h if p.change_type == "CONTENT_CHANGED")],
-        ["New PDF Links (24h)", sum(1 for p in page_changes_24h if p.change_type == "NEW_DOC_LINKED")],
+def _sheet_metadata_raw(wb, db):
+    ws = wb.create_sheet("🔬 Raw Metadata")
+    headers = [
+        "Company", "Doc Type", "Headline", "Filing Date",
+        "Period End", "Language", "Audit", "Preliminary",
+        "Has Income Stmt", "Notes", "Source", "URL",
     ]
-    for row in rows:
-        ws.append(row)
+    _write_header(ws, headers, COLOR_HEADER_NEUTRAL)
 
-    _auto_width(ws)
+    recs = (
+        db.query(MetadataRecord, DocumentRegistry, Company)
+        .join(DocumentRegistry, MetadataRecord.document_id == DocumentRegistry.id)
+        .join(Company, DocumentRegistry.company_id == Company.id)
+        .order_by(MetadataRecord.created_at.desc())
+        .all()
+    )
+
+    for i, (meta, doc, company) in enumerate(recs, start=2):
+        row = [
+            company.company_name,
+            (doc.doc_type or "").split("|")[-1],
+            meta.headline or "",
+            meta.filing_date or "",
+            meta.period_end_date or "",
+            meta.language or "",
+            "Yes" if meta.audit_flag else "No",
+            "Yes" if meta.preliminary_document else "No",
+            "Yes" if meta.income_statement else "No",
+            "Yes" if meta.note_flag else "No",
+            meta.filing_data_source or "",
+            doc.document_url,
+        ]
+        for j, val in enumerate(row, start=1):
+            ws.cell(i, j, val)
+        if i % 2 == 0:
+            for col in range(1, len(headers)+1):
+                ws.cell(i, col).fill = PatternFill("solid", fgColor=COLOR_ALT_ROW)
+
+    _auto_width(ws, headers)
+
+
+def _sheet_errors(wb, db):
+    ws = wb.create_sheet("❌ Errors")
+    headers = [
+        "Company", "Step", "Error Type", "Error Message",
+        "Document URL", "Created At",
+    ]
+    _write_header(ws, headers, "922B21")  # dark red
+
+    errors = (
+        db.query(ErrorLog, Company)
+        .outerjoin(Company, ErrorLog.company_id == Company.id)
+        .order_by(ErrorLog.created_at.desc())
+        .limit(500)
+        .all()
+    )
+
+    for i, (err, company) in enumerate(errors, start=2):
+        row = [
+            company.company_name if company else "N/A",
+            err.step or "",
+            err.error_type or "",
+            (err.error_message or "")[:200],
+            err.document_url or "",
+            str(err.created_at)[:19],
+        ]
+        for j, val in enumerate(row, start=1):
+            ws.cell(i, j, val)
+
+    _auto_width(ws, headers)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
-def _write_header(ws, headers: list):
-    ws.append(headers)
-    for cell in ws[1]:
-        cell.fill = PatternFill("solid", fgColor=HEADER_BG)
-        cell.font = Font(color="FFFFFF", bold=True)
-        cell.alignment = Alignment(horizontal="center", vertical="center")
-        cell.border = BORDER
-    ws.row_dimensions[1].height = 20
+
+def _write_header(ws, headers: List[str], color: str):
+    header_font  = Font(bold=True, color="FFFFFF", size=11)
+    header_fill  = PatternFill("solid", fgColor=color)
+    header_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    for j, h in enumerate(headers, start=1):
+        cell = ws.cell(1, j, h)
+        cell.font      = header_font
+        cell.fill      = header_fill
+        cell.alignment = header_align
+    ws.row_dimensions[1].height = 22
 
 
-def _apply_alt_row(ws, row_idx: int, col_count: int):
-    for col in range(1, col_count + 1):
-        ws.cell(row=row_idx, column=col).fill = PatternFill("solid", fgColor=ALT_ROW_BG)
-
-
-def _auto_width(ws):
-    for col in ws.columns:
-        max_len = max((len(str(cell.value or "")) for cell in col), default=10)
-        ws.column_dimensions[get_column_letter(col[0].column)].width = min(max_len + 3, 70)
-
-
-def _bool(val) -> str:
-    if val is None: return ""
-    return "TRUE" if val else "FALSE"
+def _auto_width(ws, headers: List[str]):
+    for i, h in enumerate(headers, start=1):
+        col_letter = get_column_letter(i)
+        # Set reasonable widths based on content type
+        if any(kw in h.lower() for kw in ["url", "path", "message", "summary", "finding"]):
+            ws.column_dimensions[col_letter].width = 40
+        elif any(kw in h.lower() for kw in ["headline", "topic", "type"]):
+            ws.column_dimensions[col_letter].width = 30
+        else:
+            ws.column_dimensions[col_letter].width = 18

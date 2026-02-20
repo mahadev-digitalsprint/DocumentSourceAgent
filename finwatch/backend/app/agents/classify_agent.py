@@ -1,107 +1,191 @@
 """
-M4 — Document Classification Agent
-Classifies each PDF into a canonical document type using 3-tier heuristics.
+M4 — Document Classifier Agent
+===============================
+Classifies discovered PDFs into a structured two-level taxonomy:
 
-Tier 1: Filename regex
-Tier 2: URL path keywords
-Tier 3: First-page text patterns
-Tier 4: LLM fallback (only for ambiguous documents)
+  CATEGORY (top level):
+    • FINANCIAL       — directly related to company financial performance
+    • NON_FINANCIAL   — corporate, ESG, legal, product, regulatory
 
-Output types: Annual Report | Quarterly Report | Financial Statement | ESG Report | Unknown
+  DOC_TYPE (sub-level) — 18 types:
+
+  Financial:
+    ANNUAL_REPORT         Full-year financial statements + MD&A
+    QUARTERLY_RESULTS     Q1/Q2/Q3/Q4 earnings release / results
+    HALF_YEAR_RESULTS     H1/H2 interim financial statements
+    EARNINGS_RELEASE      Short-form earnings press release / profit announcement
+    INVESTOR_PRESENTATION Investor day / roadshow / analyst deck
+    FINANCIAL_STATEMENT   Standalone balance sheet, P&L, cash-flow
+    IPO_PROSPECTUS        Initial public offering/DRHP/SEBI prospectus
+    RIGHTS_ISSUE          Rights issue / FPO offer document
+    DIVIDEND_NOTICE       Dividend declaration / record date notice
+    CONCALL_TRANSCRIPT    Earnings conference call transcript/script
+
+  Non-Financial:
+    ESG_REPORT            Sustainability / CSR / ESG / BRSR report
+    CORPORATE_GOVERNANCE  Board report / governance / compliance filing
+    PRESS_RELEASE         News announcement, product launch, M&A news
+    REGULATORY_FILING     SEBI, RBI, MCA, Exchange filing (non-financial)
+    LEGAL_DOCUMENT        Court filing, arbitration, legal notice
+    HR_PEOPLE             HR policy, ESOP, headcount, diversity report
+    PRODUCT_BROCHURE      Product / service marketing document
+    OTHER                 Unclassified or unknown document type
 """
-import re
 import logging
-from typing import Optional
+import re
+from typing import Tuple
 
-from app.workflow.state import PipelineState
+from app.config import get_settings
 from app.database import SessionLocal
 from app.models import DocumentRegistry
+from app.workflow.state import PipelineState
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
-# ── Regex patterns ─────────────────────────────────────────────────────────
-_ANNUAL = [r"annual.?report", r"\bar\s?20\d{2}\b", r"annual.?results",
-           r"year.?end", r"full.?year", r"fy\d{2,4}", r"annual.?accounts"]
-_QUARTERLY = [r"q[1-4].?20\d{2}", r"quarter(ly)?", r"qr\d{2,4}",
-              r"q[1-4]fy", r"half.?year", r"interim", r"six.?month"]
-_FINANCIAL = [r"financial.?statement", r"balance.?sheet", r"fs\d{2,4}",
-              r"financial.?result", r"standalone", r"consolidated.?accounts"]
-_ESG = [r"esg", r"sustainab", r"csr.?report", r"environment", r"social.?governance"]
+# ── Classification rules ──────────────────────────────────────────────────────
+# Each rule: (category, doc_type, [keywords_that_must_appear_in_url_or_filename_or_first_page_text])
 
-# ── URL path keywords ──────────────────────────────────────────────────────
-_URL_ANNUAL = ["/annual", "/ar/", "/annual-report", "/full-year"]
-_URL_QUARTERLY = ["/quarterly", "/qr/", "/interim", "/half-year", "/q1", "/q2", "/q3", "/q4"]
-_URL_FINANCIAL = ["/financial-statement", "/accounts", "/financial-result"]
-_URL_ESG = ["/esg", "/sustainability", "/csr"]
+RULES = [
+    # ── FINANCIAL ──────────────────────────────────────────────────────────────
+    ("FINANCIAL", "ANNUAL_REPORT", [
+        "annual report", "annual-report", "annualreport", "ar202", "ar-20",
+        "yearly report", "full year", "full-year results",
+    ]),
+    ("FINANCIAL", "QUARTERLY_RESULTS", [
+        "quarterly result", "quarter result", "q1 result", "q2 result",
+        "q3 result", "q4 result", "q1result", "q2result", "q3result", "q4result",
+        "first quarter", "second quarter", "third quarter", "fourth quarter",
+        "unaudited result", "qr20", "qtr result",
+    ]),
+    ("FINANCIAL", "HALF_YEAR_RESULTS", [
+        "half year", "half-year", "halfyear", "h1 result", "h2 result",
+        "interim result", "six month", "6 month",
+    ]),
+    ("FINANCIAL", "EARNINGS_RELEASE", [
+        "earnings release", "profit announcement", "earnings announcement",
+        "net profit", "revenue result", "financial result",
+    ]),
+    ("FINANCIAL", "INVESTOR_PRESENTATION", [
+        "investor presentation", "investor day", "analyst day", "roadshow",
+        "analyst presentation", "capital market day", "cmd presentation",
+    ]),
+    ("FINANCIAL", "FINANCIAL_STATEMENT", [
+        "balance sheet", "profit and loss", "p&l", "cash flow statement",
+        "standalone financial", "consolidated financial", "financial statement",
+    ]),
+    ("FINANCIAL", "IPO_PROSPECTUS", [
+        "prospectus", "drhp", "rhp", "offer document", "red herring",
+        "ipo", "initial public offering",
+    ]),
+    ("FINANCIAL", "RIGHTS_ISSUE", [
+        "rights issue", "rights offer", "fpo", "further public offer",
+        "open offer", "buyback",
+    ]),
+    ("FINANCIAL", "DIVIDEND_NOTICE", [
+        "dividend", "record date", "book closure", "interim dividend",
+        "final dividend",
+    ]),
+    ("FINANCIAL", "CONCALL_TRANSCRIPT", [
+        "concall", "conference call", "earnings call", "analyst call",
+        "q&a transcript", "call transcript",
+    ]),
 
-# ── First-page text keywords ───────────────────────────────────────────────
-_TEXT_ANNUAL = ["annual report", "to our shareholders", "year ended", "full year"]
-_TEXT_QUARTERLY = ["quarter ended", "first quarter", "second quarter", "third quarter",
-                   "fourth quarter", "q1 ", "q2 ", "q3 ", "q4 ", "nine months"]
-_TEXT_FINANCIAL = ["statement of financial position", "balance sheet", "financial statements",
-                   "profit and loss", "income statement"]
-_TEXT_ESG = ["esg report", "sustainability report", "corporate responsibility"]
+    # ── NON-FINANCIAL ──────────────────────────────────────────────────────────
+    ("NON_FINANCIAL", "ESG_REPORT", [
+        "esg", "sustainability report", "csr report", "brsr",
+        "environmental report", "climate report", "net zero",
+        "responsible business",
+    ]),
+    ("NON_FINANCIAL", "CORPORATE_GOVERNANCE", [
+        "corporate governance", "board report", "directors report",
+        "governance report", "compliance report", "secretarial audit",
+    ]),
+    ("NON_FINANCIAL", "PRESS_RELEASE", [
+        "press release", "media release", "news release", "announcement",
+        "merger", "acquisition", "strategic partnership",
+    ]),
+    ("NON_FINANCIAL", "REGULATORY_FILING", [
+        "sebi", "rbi filing", "mca filing", "exchange filing",
+        "stock exchange", "regulatory disclosure", "intimation",
+    ]),
+    ("NON_FINANCIAL", "LEGAL_DOCUMENT", [
+        "court order", "arbitration", "legal notice", "litigation",
+        "tribunal", "judgment",
+    ]),
+    ("NON_FINANCIAL", "HR_PEOPLE", [
+        "human resource", "hr policy", "esop", "headcount", "diversity",
+        "inclusion", "employee", "people report",
+    ]),
+    ("NON_FINANCIAL", "PRODUCT_BROCHURE", [
+        "product", "brochure", "catalogue", "service offering",
+        "solution brief", "datasheet",
+    ]),
+]
 
 
 def classify_agent(state: PipelineState) -> dict:
-    """LangGraph node — classifies doc_type for every downloaded document."""
+    """LangGraph node — classify each downloaded document."""
     db = SessionLocal()
     try:
+        updated = 0
         for doc_info in state.get("downloaded_docs", []):
-            if doc_info.get("status") == "UNCHANGED":
+            doc_id = doc_info.get("doc_id")
+            if not doc_id:
                 continue
-            doc: Optional[DocumentRegistry] = db.query(DocumentRegistry).get(doc_info.get("doc_id"))
+
+            doc = db.query(DocumentRegistry).get(doc_id)
             if not doc:
                 continue
 
-            doc_type = classify_doc(
-                filename=doc.local_path.split("/")[-1] if doc.local_path else "",
-                url=doc.document_url,
+            category, doc_type = _classify(
+                url=doc.document_url or "",
+                local_path=doc.local_path or "",
                 first_page_text=doc.first_page_text or "",
             )
+
             doc.doc_type = doc_type
-            logger.info(f"[M4-CLASSIFY] {doc_type}: {doc.document_url}")
-        db.commit()
+            # Store category in doc_type as "CATEGORY|TYPE" for easy filtering
+            doc.doc_type = f"{category}|{doc_type}"
+            db.commit()
+            updated += 1
+            logger.info(
+                f"[M4-CLASSIFY] doc_id={doc_id} → {category} / {doc_type}"
+            )
+
+        return {"downloaded_docs": state.get("downloaded_docs", [])}
     finally:
         db.close()
 
-    return {}
 
-
-def classify_doc(filename: str = "", url: str = "", first_page_text: str = "") -> str:
+def _classify(url: str, local_path: str, first_page_text: str) -> Tuple[str, str]:
     """
-    Pure function — classifies a document.
-    Returns: Annual Report | Quarterly Report | Financial Statement | ESG Report | Unknown
+    Multi-signal classifier using URL path, filename, and first-page text.
+    Returns (category, doc_type) tuple.
     """
-    fn = filename.lower()
-    u = url.lower()
-    txt = first_page_text[:3000].lower()
+    # Combine all signals into a single lowercase string for matching
+    signals = " ".join([
+        url.lower(),
+        local_path.lower().split("\\")[-1],
+        local_path.lower().split("/")[-1],
+        first_page_text.lower()[:3000],   # first 3000 chars of text
+    ])
 
-    # ── Tier 1: Filename ──────────────────────────────────────────────────
-    if _match(_ESG, fn):     return "ESG Report"
-    if _match(_ANNUAL, fn):  return "Annual Report"
-    if _match(_QUARTERLY, fn): return "Quarterly Report"
-    if _match(_FINANCIAL, fn): return "Financial Statement"
+    best_category, best_type, best_score = "NON_FINANCIAL", "OTHER", 0
 
-    # ── Tier 2: URL path ──────────────────────────────────────────────────
-    if _contains(_URL_ESG, u):       return "ESG Report"
-    if _contains(_URL_ANNUAL, u):    return "Annual Report"
-    if _contains(_URL_QUARTERLY, u): return "Quarterly Report"
-    if _contains(_URL_FINANCIAL, u): return "Financial Statement"
+    for category, doc_type, keywords in RULES:
+        score = sum(1 for kw in keywords if kw in signals)
+        if score > best_score:
+            best_score = score
+            best_category = category
+            best_type = doc_type
 
-    # ── Tier 3: First-page text ───────────────────────────────────────────
-    if txt:
-        if _contains(_TEXT_ESG, txt):       return "ESG Report"
-        if _contains(_TEXT_ANNUAL, txt):    return "Annual Report"
-        if _contains(_TEXT_QUARTERLY, txt): return "Quarterly Report"
-        if _contains(_TEXT_FINANCIAL, txt): return "Financial Statement"
-
-    return "Unknown"
+    return best_category, best_type
 
 
-def _match(patterns: list, text: str) -> bool:
-    return any(re.search(p, text, re.IGNORECASE) for p in patterns)
-
-
-def _contains(keywords: list, text: str) -> bool:
-    return any(k in text for k in keywords)
+def get_category_and_type(doc_type_field: str):
+    """Parse 'CATEGORY|TYPE' stored value back into (category, type)."""
+    if "|" in (doc_type_field or ""):
+        parts = doc_type_field.split("|", 1)
+        return parts[0], parts[1]
+    return "NON_FINANCIAL", doc_type_field or "OTHER"

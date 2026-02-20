@@ -94,23 +94,45 @@ def crawl_agent(state: PipelineState) -> dict:
 def _strategy_firecrawl(url: str) -> List[str]:
     if not settings.firecrawl_api_key:
         return []
-    resp = httpx.post(
-        "https://api.firecrawl.dev/v0/crawl",
-        headers={"Authorization": f"Bearer {settings.firecrawl_api_key}"},
-        json={
-            "url": url,
-            "crawlerOptions": {
-                "includes": ["*.pdf"],
-                "excludes": ["*.jpg", "*.png", "*.css", "*.js"],
+    try:
+        resp = httpx.post(
+            "https://api.firecrawl.dev/v1/crawl",
+            headers={"Authorization": f"Bearer {settings.firecrawl_api_key}"},
+            json={
+                "url": url,
                 "limit": MAX_CRAWL_PAGES,
-                "returnOnlyUrls": True,
+                "scrapeOptions": {"formats": ["links"]},
             },
-        },
-        timeout=60,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    return [item["url"] for item in data.get("data", []) if item.get("url", "").lower().endswith(".pdf")]
+            timeout=60,
+        )
+        # Detect insufficient credits (402) or quota errors gracefully
+        if resp.status_code == 402:
+            logger.warning(
+                "[M1-CRAWL][Firecrawl] Insufficient credits — skipping Firecrawl, "
+                "using remaining 4 strategies instead."
+            )
+            return []
+        if resp.status_code == 429:
+            logger.warning("[M1-CRAWL][Firecrawl] Rate limited — skipping.")
+            return []
+        resp.raise_for_status()
+        data = resp.json()
+        # v1 returns data list with each page's links
+        found = []
+        for item in data.get("data", []):
+            for link in item.get("links", []):
+                if isinstance(link, str) and link.lower().endswith(".pdf"):
+                    found.append(link)
+        return found
+    except httpx.HTTPStatusError as e:
+        if "insufficient" in str(e).lower() or "credits" in str(e).lower() or "402" in str(e):
+            logger.warning("[M1-CRAWL][Firecrawl] Insufficient credits — skipping.")
+        else:
+            logger.warning(f"[M1-CRAWL][Firecrawl] HTTP error: {e}")
+        return []
+    except Exception as e:
+        logger.warning(f"[M1-CRAWL][Firecrawl] Failed: {e}")
+        return []
 
 
 def _strategy_tavily(company_name: str) -> List[str]:
