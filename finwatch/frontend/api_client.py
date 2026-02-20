@@ -9,17 +9,21 @@ from typing import Any, Optional
 API_BASE = "http://localhost:8080/api"
 
 
-def api(method: str, path: str, json: Optional[dict] = None, params: Optional[dict] = None) -> Any:
+def api(method: str, path: str, json: Optional[dict] = None, params: Optional[dict] = None, timeout: int = 30) -> Any:
     """Universal API call — returns parsed JSON or None on error."""
     url = f"{API_BASE}{path}"
     try:
         method = method.upper()
+        # Increase timeout for POST/PATCH if not specified, as they might be sync jobs
+        if timeout == 30 and method in ["POST", "PATCH"]:
+            timeout = 300 
+
         if method == "GET":
-            r = requests.get(url, params=params, timeout=15)
+            r = requests.get(url, params=params, timeout=timeout)
         elif method == "POST":
-            r = requests.post(url, json=json, timeout=30)
+            r = requests.post(url, json=json, timeout=timeout)
         elif method == "PATCH":
-            r = requests.patch(url, json=json, timeout=15)
+            r = requests.patch(url, json=json, timeout=timeout)
         elif method == "DELETE":
             r = requests.delete(url, timeout=10)
             return r.status_code < 300

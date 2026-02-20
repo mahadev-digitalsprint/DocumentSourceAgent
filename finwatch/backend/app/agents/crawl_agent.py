@@ -33,58 +33,100 @@ FINANCIAL_KEYWORDS = [
 PDF_REGEX = re.compile(r'https?://[^\s\'"<>]+\.pdf(?:\?[^\s\'"<>]*)?', re.IGNORECASE)
 MAX_CRAWL_PAGES = 200
 
+# Common TLDs and subdomains to strip when cleaning company names
+_STRIP_PREFIXES = re.compile(r'^(www\d*|ir|investors?|investor-relations|corp|corporate)\.', re.I)
+_STRIP_TLDS    = re.compile(r'\.(com|in|co\.in|net|org|io|gov|edu|bank|finance|info|biz|us|uk|co\.uk)$', re.I)
+
+
+def _clean_company_name(raw_name: str, website_url: str = "") -> str:
+    """
+    Convert a raw company_name into a clean search term.
+    Handles cases where users paste a domain instead of a company name:
+      'www.icici.bank.in'  → 'icici bank'
+      'http://www.tcs.com' → 'tcs'
+      'Tata Consultancy'   → 'Tata Consultancy'  (unchanged)
+    """
+    name = raw_name.strip()
+
+    # If name looks like a URL/domain (contains dots but no spaces)
+    if '.' in name and ' ' not in name:
+        # Strip protocol
+        name = re.sub(r'^https?://', '', name, flags=re.I)
+        # Strip path
+        name = name.split('/')[0]
+        # Strip subdomains like www., ir., investors.
+        name = _STRIP_PREFIXES.sub('', name)
+        # Strip TLD
+        name = _STRIP_TLDS.sub('', name)
+        # Convert dots/dashes/underscores to spaces
+        name = re.sub(r'[._-]+', ' ', name).strip()
+
+    # If still empty, fall back to extracting from website_url
+    if not name and website_url:
+        parsed = urlparse(website_url)
+        host = parsed.netloc or website_url.split('/')[0]
+        host = _STRIP_PREFIXES.sub('', host)
+        host = _STRIP_TLDS.sub('', host)
+        name = re.sub(r'[._-]+', ' ', host).strip()
+
+    return name or raw_name
+
 
 def crawl_agent(state: PipelineState) -> dict:
     """LangGraph node — discovers all PDF URLs for the company."""
-    logger.info(f"[M1-CRAWL] Starting: {state['company_name']} → {state['website_url']}")
+    raw_name   = state["company_name"]
+    website    = state["website_url"]
+    clean_name = _clean_company_name(raw_name, website)
+
+    if clean_name != raw_name:
+        logger.info(f"[M1-CRAWL] Company name cleaned: '{raw_name}' → '{clean_name}'")
+    logger.info(f"[M1-CRAWL] Starting: {clean_name} → {website}")
 
     all_urls: Set[str] = set()
 
-    # Strategy 1: Firecrawl
+    # Strategy 1: Firecrawl (deep JS crawl)
     try:
-        fc_urls = _strategy_firecrawl(state["website_url"])
+        fc_urls = _strategy_firecrawl(website)
         all_urls.update(fc_urls)
         logger.info(f"[M1-CRAWL][Firecrawl] +{len(fc_urls)} URLs")
     except Exception as e:
         logger.warning(f"[M1-CRAWL][Firecrawl] Failed: {e}")
 
-    # Strategy 2: Tavily
+    # Strategy 2: Tavily semantic search (uses cleaned name + site: hint)
     try:
-        tv_urls = _strategy_tavily(state["company_name"])
+        tv_urls = _strategy_tavily(clean_name, website)
         all_urls.update(tv_urls)
         logger.info(f"[M1-CRAWL][Tavily] +{len(tv_urls)} URLs")
     except Exception as e:
         logger.warning(f"[M1-CRAWL][Tavily] Failed: {e}")
 
-    # Strategy 3: SEC EDGAR
+    # Strategy 3: SEC EDGAR (uses cleaned name)
     try:
-        ed_urls = _strategy_edgar(state["company_name"])
+        ed_urls = _strategy_edgar(clean_name)
         all_urls.update(ed_urls)
         logger.info(f"[M1-CRAWL][EDGAR] +{len(ed_urls)} URLs")
     except Exception as e:
         logger.warning(f"[M1-CRAWL][EDGAR] Failed: {e}")
 
-    # Strategy 4: BeautifulSoup recursive
+    # Strategy 4: BeautifulSoup recursive crawler
     try:
-        bs_urls = _strategy_bs4(state["website_url"], depth=state.get("crawl_depth", 3))
+        bs_urls = _strategy_bs4(website, depth=state.get("crawl_depth", 3))
         all_urls.update(bs_urls)
         logger.info(f"[M1-CRAWL][BS4] +{len(bs_urls)} URLs")
     except Exception as e:
         logger.warning(f"[M1-CRAWL][BS4] Failed: {e}")
 
-    # Strategy 5: Regex scan
+    # Strategy 5: Regex PDF scan on raw HTML
     try:
-        rx_urls = _strategy_regex(state["website_url"])
+        rx_urls = _strategy_regex(website)
         all_urls.update(rx_urls)
         logger.info(f"[M1-CRAWL][Regex] +{len(rx_urls)} URLs")
     except Exception as e:
         logger.warning(f"[M1-CRAWL][Regex] Failed: {e}")
 
-    # Filter: financial relevance & deduplicate
     filtered = _filter_urls(list(all_urls))
     logger.info(f"[M1-CRAWL] Total unique financial PDFs: {len(filtered)}")
-
-    return {"pdf_urls": filtered, "crawl_errors": []}
+    return {"pdf_urls": filtered, "crawl_errors": [], "company_name_clean": clean_name}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -135,13 +177,25 @@ def _strategy_firecrawl(url: str) -> List[str]:
         return []
 
 
-def _strategy_tavily(company_name: str) -> List[str]:
+def _strategy_tavily(company_name: str, website_url: str = "") -> List[str]:
     if not settings.tavily_api_key:
         return []
+
+    # Build site: hint from website_url for more targeted results
+    domain = ""
+    if website_url:
+        parsed = urlparse(website_url)
+        domain = parsed.netloc or ""
+        # strip www.
+        domain = re.sub(r'^www\.', '', domain)
+
+    site_hint = f"site:{domain}" if domain else ""
+
     queries = [
-        f"{company_name} annual report filetype:pdf",
+        f"{company_name} annual report filetype:pdf {site_hint}".strip(),
         f"{company_name} quarterly results investor relations filetype:pdf",
-        f"{company_name} financial statement disclosure filetype:pdf",
+        f"{company_name} financial statement disclosure pdf",
+        f"{company_name} earnings release results pdf",
     ]
     found = []
     for query in queries:
@@ -153,11 +207,17 @@ def _strategy_tavily(company_name: str) -> List[str]:
                     "query": query,
                     "search_depth": "advanced",
                     "max_results": 15,
+                    "include_domains": [domain] if domain else [],
                 },
                 timeout=20,
             )
             resp.raise_for_status()
-            found += [r["url"] for r in resp.json().get("results", []) if r.get("url", "").lower().endswith(".pdf")]
+            results = resp.json().get("results", [])
+            # Accept both .pdf URLs and pages that likely host PDFs
+            for r in results:
+                url = r.get("url", "")
+                if url.lower().endswith(".pdf"):
+                    found.append(url)
         except Exception:
             pass
     return found
