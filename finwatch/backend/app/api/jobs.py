@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import timedelta
 import json
 import logging
 import os
@@ -27,6 +27,7 @@ from app.services.job_run_service import (
     mark_retrying,
     mark_running,
 )
+from app.utils.time import utc_now_naive
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -332,7 +333,7 @@ async def stream_job_events(
     async def event_stream():
         seen_versions: deque[str] = deque(maxlen=500)
         seen_lookup = set()
-        warmup_cutoff = datetime.utcnow() - timedelta(minutes=15)
+        warmup_cutoff = utc_now_naive() - timedelta(minutes=15)
 
         while True:
             if await request.is_disconnected():
