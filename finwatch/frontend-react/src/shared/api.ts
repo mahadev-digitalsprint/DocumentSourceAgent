@@ -24,6 +24,8 @@ import type {
   PageSnapshot,
   QueuedJobResponse,
   SchedulerStatus,
+  SourceSummaryItem,
+  IngestionRetryItem,
   WebwatchDirectResult,
 } from './types'
 
@@ -101,7 +103,7 @@ export const jobsApi = {
 }
 
 export const documentsApi = {
-  list: () => request<DocumentRecord[]>('/documents/'),
+  list: () => request<DocumentRecord[]>('/documents/?limit=1000'),
   reviewQueue: (companyId?: number, limit = 100) => {
     const params = new URLSearchParams({ limit: String(limit) })
     if (companyId) params.set('company_id', String(companyId))
@@ -112,18 +114,37 @@ export const documentsApi = {
       method: 'PATCH',
       body: JSON.stringify({ needs_review: needsReview }),
     }),
-  metadataList: (companyId?: number) => {
-    const params = new URLSearchParams()
+  metadataList: (companyId?: number, limit = 1000) => {
+    const params = new URLSearchParams({ limit: String(limit) })
     if (companyId) params.set('company_id', String(companyId))
     const qs = params.toString()
     return request<MetadataListItem[]>(`/documents/metadata/${qs ? `?${qs}` : ''}`)
   },
   metadataByDocId: (docId: number) => request<DocumentMetadataRecord>(`/documents/${docId}/metadata`),
-  changes: (hours: number, companyId?: number) => {
-    const params = new URLSearchParams({ hours: String(hours) })
+  changes: (hours: number, companyId?: number, limit = 1000) => {
+    const params = new URLSearchParams({ hours: String(hours), limit: String(limit) })
     if (companyId) params.set('company_id', String(companyId))
     return request<ChangeLog[]>(`/documents/changes/?${params.toString()}`)
   },
+  sourceSummary: (hours = 168, companyId?: number, limit = 200) => {
+    const params = new URLSearchParams({ hours: String(hours), limit: String(limit) })
+    if (companyId) params.set('company_id', String(companyId))
+    return request<SourceSummaryItem[]>(`/documents/sources/summary?${params.toString()}`)
+  },
+  retries: (args?: { status?: string; companyId?: number; sourceDomain?: string; limit?: number }) => {
+    const params = new URLSearchParams()
+    if (args?.status) params.set('status', args.status)
+    if (args?.companyId) params.set('company_id', String(args.companyId))
+    if (args?.sourceDomain) params.set('source_domain', args.sourceDomain)
+    if (args?.limit) params.set('limit', String(args.limit))
+    const qs = params.toString()
+    return request<IngestionRetryItem[]>(`/documents/retries${qs ? `?${qs}` : ''}`)
+  },
+  updateRetry: (retryId: number, payload: { status: string; next_retry_in_minutes?: number; reason_code?: string; last_error?: string }) =>
+    request<{ id: number; status: string; next_retry_at?: string; failure_count: number; reason_code?: string }>(`/documents/retries/${retryId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
 }
 
 export const webwatchApi = {

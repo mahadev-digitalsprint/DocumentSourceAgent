@@ -23,6 +23,11 @@ export type DocumentRecord = {
   classifier_confidence?: number | null
   classifier_version?: string | null
   needs_review?: boolean
+  source_type?: string | null
+  source_domain?: string | null
+  discovery_strategy?: string | null
+  first_seen_at?: string | null
+  last_seen_at?: string | null
   created_at: string
 }
 
@@ -243,6 +248,32 @@ export type SchedulerStatus = {
   last_webwatch_run_at?: string | null
   last_digest_run_at?: string | null
   last_error?: string | null
+}
+
+export type SourceSummaryItem = {
+  source_domain: string
+  discovery_strategy: string
+  source_type: string
+  documents_total: number
+  companies_count: number
+  new_docs_window: number
+  needs_review_count: number
+  last_seen_at?: string | null
+}
+
+export type IngestionRetryItem = {
+  id: number
+  company_id?: number | null
+  document_url: string
+  source_domain?: string | null
+  reason_code: string
+  failure_count: number
+  next_retry_at?: string | null
+  status: string
+  last_error?: string | null
+  last_attempt_at?: string | null
+  created_at?: string | null
+  updated_at?: string | null
 }
 
 export type CrawlDiagnosticRecord = {

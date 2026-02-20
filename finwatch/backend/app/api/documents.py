@@ -1,20 +1,41 @@
 """API router — documents, metadata, change logs, Excel download."""
 import os
+from datetime import timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
 import json
 from pydantic import BaseModel
+from sqlalchemy import case, func
 
 from app.database import get_db
-from app.models import DocumentRegistry, MetadataRecord, ChangeLog, ErrorLog, Company
+from app.models import DocumentRegistry, MetadataRecord, ChangeLog, ErrorLog, Company, IngestionRetry
+from app.utils.time import utc_now_naive
 
 router = APIRouter()
 
 
 class ReviewUpdateIn(BaseModel):
     needs_review: bool = False
+
+
+class RetryUpdateIn(BaseModel):
+    status: str
+    next_retry_in_minutes: Optional[int] = None
+    reason_code: Optional[str] = None
+    last_error: Optional[str] = None
+
+
+def _api_error(status_code: int, code: str, message: str, details: Optional[dict] = None):
+    raise HTTPException(
+        status_code=status_code,
+        detail={
+            "code": code,
+            "message": message,
+            "details": details or {},
+        },
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -26,6 +47,7 @@ def list_documents(
     company_id: Optional[int] = None,
     doc_type: Optional[str] = None,
     status: Optional[str] = None,
+    limit: int = Query(default=1000, ge=1, le=5000),
     db: Session = Depends(get_db),
 ):
     q = db.query(DocumentRegistry)
@@ -35,7 +57,7 @@ def list_documents(
         q = q.filter(DocumentRegistry.doc_type.like(f"%{doc_type}%"))
     if status:
         q = q.filter(DocumentRegistry.status == status)
-    docs = q.order_by(DocumentRegistry.created_at.desc()).all()
+    docs = q.order_by(DocumentRegistry.created_at.desc()).limit(limit).all()
     return [
         {
             "id": d.id,
@@ -52,6 +74,11 @@ def list_documents(
             "classifier_confidence": d.classifier_confidence,
             "classifier_version": d.classifier_version,
             "needs_review": d.needs_review,
+            "source_type": d.source_type,
+            "source_domain": d.source_domain,
+            "discovery_strategy": d.discovery_strategy,
+            "first_seen_at": str(d.first_seen_at or ""),
+            "last_seen_at": str(d.last_seen_at or ""),
             "local_path": d.local_path,
             "last_checked": str(d.last_checked or ""),
             "created_at": str(d.created_at or ""),
@@ -68,6 +95,7 @@ def list_documents(
 @router.get("/metadata")
 def list_all_metadata(
     company_id: Optional[int] = None,
+    limit: int = Query(default=1000, ge=1, le=5000),
     db: Session = Depends(get_db),
 ):
     """Return all metadata records joined with company name."""
@@ -79,7 +107,7 @@ def list_all_metadata(
     if company_id:
         q = q.filter(DocumentRegistry.company_id == company_id)
 
-    results = q.order_by(MetadataRecord.created_at.desc()).all()
+    results = q.order_by(MetadataRecord.created_at.desc()).limit(limit).all()
     return [
         {
             "id": m.id,
@@ -131,6 +159,7 @@ def get_single_metadata(doc_id: int, db: Session = Depends(get_db)):
 def get_change_logs(
     company_id: Optional[int] = None,
     hours: int = 24,
+    limit: int = Query(default=1000, ge=1, le=5000),
     db: Session = Depends(get_db),
 ):
     from datetime import datetime, timedelta
@@ -143,7 +172,7 @@ def get_change_logs(
     )
     if company_id:
         q = q.filter(DocumentRegistry.company_id == company_id)
-    changes = q.order_by(ChangeLog.detected_at.desc()).all()
+    changes = q.order_by(ChangeLog.detected_at.desc()).limit(limit).all()
     return [
         {
             "id": c.id,
@@ -166,7 +195,11 @@ def get_change_logs(
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/errors/")
-def get_error_logs(company_id: Optional[int] = None, db: Session = Depends(get_db)):
+def get_error_logs(
+    company_id: Optional[int] = None,
+    limit: int = Query(default=200, ge=1, le=2000),
+    db: Session = Depends(get_db),
+):
     q = db.query(ErrorLog)
     if company_id:
         q = q.filter(ErrorLog.company_id == company_id)
@@ -177,8 +210,123 @@ def get_error_logs(company_id: Optional[int] = None, db: Session = Depends(get_d
             "document_url": e.document_url, "error_message": e.error_message,
             "created_at": str(e.created_at),
         }
-        for e in q.order_by(ErrorLog.created_at.desc()).limit(200).all()
+        for e in q.order_by(ErrorLog.created_at.desc()).limit(limit).all()
     ]
+
+
+@router.get("/sources/summary")
+def source_summary(
+    company_id: Optional[int] = None,
+    hours: int = Query(default=168, ge=1, le=24 * 365),
+    limit: int = Query(default=200, ge=1, le=1000),
+    db: Session = Depends(get_db),
+):
+    cutoff = utc_now_naive() - timedelta(hours=hours)
+    q = db.query(
+        func.coalesce(DocumentRegistry.source_domain, "UNKNOWN").label("source_domain"),
+        func.coalesce(DocumentRegistry.discovery_strategy, "UNKNOWN").label("discovery_strategy"),
+        func.coalesce(DocumentRegistry.source_type, "UNKNOWN").label("source_type"),
+        func.count(DocumentRegistry.id).label("documents_total"),
+        func.count(func.distinct(DocumentRegistry.company_id)).label("companies_count"),
+        func.sum(case((DocumentRegistry.created_at >= cutoff, 1), else_=0)).label("new_docs_window"),
+        func.sum(case((DocumentRegistry.needs_review == True, 1), else_=0)).label("needs_review_count"),
+        func.max(DocumentRegistry.last_seen_at).label("last_seen_at"),
+    )
+    if company_id:
+        q = q.filter(DocumentRegistry.company_id == company_id)
+    rows = (
+        q.group_by(
+            func.coalesce(DocumentRegistry.source_domain, "UNKNOWN"),
+            func.coalesce(DocumentRegistry.discovery_strategy, "UNKNOWN"),
+            func.coalesce(DocumentRegistry.source_type, "UNKNOWN"),
+        )
+        .order_by(func.count(DocumentRegistry.id).desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "source_domain": row[0],
+            "discovery_strategy": row[1],
+            "source_type": row[2],
+            "documents_total": int(row[3] or 0),
+            "companies_count": int(row[4] or 0),
+            "new_docs_window": int(row[5] or 0),
+            "needs_review_count": int(row[6] or 0),
+            "last_seen_at": str(row[7] or ""),
+        }
+        for row in rows
+    ]
+
+
+@router.get("/retries")
+def list_ingestion_retries(
+    status: Optional[str] = Query(default=None),
+    company_id: Optional[int] = None,
+    source_domain: Optional[str] = None,
+    limit: int = Query(default=200, ge=1, le=2000),
+    db: Session = Depends(get_db),
+):
+    q = db.query(IngestionRetry)
+    if status:
+        q = q.filter(IngestionRetry.status == status.upper())
+    if company_id:
+        q = q.filter(IngestionRetry.company_id == company_id)
+    if source_domain:
+        q = q.filter(func.lower(IngestionRetry.source_domain) == source_domain.lower())
+    rows = q.order_by(IngestionRetry.created_at.desc()).limit(limit).all()
+    return [
+        {
+            "id": row.id,
+            "company_id": row.company_id,
+            "document_url": row.document_url,
+            "source_domain": row.source_domain,
+            "reason_code": row.reason_code,
+            "failure_count": row.failure_count,
+            "next_retry_at": str(row.next_retry_at or ""),
+            "status": row.status,
+            "last_error": row.last_error,
+            "last_attempt_at": str(row.last_attempt_at or ""),
+            "created_at": str(row.created_at or ""),
+            "updated_at": str(row.updated_at or ""),
+        }
+        for row in rows
+    ]
+
+
+@router.patch("/retries/{retry_id}")
+def update_ingestion_retry(retry_id: int, body: RetryUpdateIn, db: Session = Depends(get_db)):
+    retry = db.get(IngestionRetry, retry_id)
+    if not retry:
+        _api_error(404, "RETRY_NOT_FOUND", "Retry entry not found", {"retry_id": retry_id})
+
+    next_status = (body.status or "").upper()
+    allowed = {"PENDING", "DEAD", "RESOLVED"}
+    if next_status not in allowed:
+        _api_error(400, "INVALID_RETRY_STATUS", "Unsupported retry status", {"status": body.status, "allowed": sorted(allowed)})
+
+    retry.status = next_status
+    if body.reason_code:
+        retry.reason_code = body.reason_code[:100]
+    if body.last_error:
+        retry.last_error = body.last_error[:2000]
+
+    now = utc_now_naive()
+    retry.last_attempt_at = now
+    if next_status == "PENDING":
+        delay = int(body.next_retry_in_minutes or 0)
+        retry.next_retry_at = now + timedelta(minutes=max(0, min(delay, 24 * 60)))
+    else:
+        retry.next_retry_at = None
+    db.commit()
+    db.refresh(retry)
+    return {
+        "id": retry.id,
+        "status": retry.status,
+        "next_retry_at": str(retry.next_retry_at or ""),
+        "failure_count": retry.failure_count,
+        "reason_code": retry.reason_code,
+    }
 
 
 @router.get("/review/queue")

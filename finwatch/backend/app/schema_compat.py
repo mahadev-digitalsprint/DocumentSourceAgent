@@ -28,6 +28,8 @@ def ensure_runtime_schema_compatibility() -> None:
 
     if "crawl_diagnostics" not in tables and "crawl_diagnostics" in Base.metadata.tables:
         Base.metadata.tables["crawl_diagnostics"].create(bind=engine, checkfirst=True)
+    if "ingestion_retries" not in tables and "ingestion_retries" in Base.metadata.tables:
+        Base.metadata.tables["ingestion_retries"].create(bind=engine, checkfirst=True)
 
     if "document_registry" in tables:
         columns = {column["name"] for column in inspector.get_columns("document_registry")}
@@ -38,6 +40,16 @@ def ensure_runtime_schema_compatibility() -> None:
             statements.append("ALTER TABLE document_registry ADD COLUMN classifier_version VARCHAR(50)")
         if "needs_review" not in columns:
             statements.append("ALTER TABLE document_registry ADD COLUMN needs_review BOOLEAN")
+        if "source_type" not in columns:
+            statements.append("ALTER TABLE document_registry ADD COLUMN source_type VARCHAR(50)")
+        if "source_domain" not in columns:
+            statements.append("ALTER TABLE document_registry ADD COLUMN source_domain VARCHAR(255)")
+        if "discovery_strategy" not in columns:
+            statements.append("ALTER TABLE document_registry ADD COLUMN discovery_strategy VARCHAR(100)")
+        if "first_seen_at" not in columns:
+            statements.append("ALTER TABLE document_registry ADD COLUMN first_seen_at DATETIME")
+        if "last_seen_at" not in columns:
+            statements.append("ALTER TABLE document_registry ADD COLUMN last_seen_at DATETIME")
         if statements:
             with engine.begin() as conn:
                 for stmt in statements:

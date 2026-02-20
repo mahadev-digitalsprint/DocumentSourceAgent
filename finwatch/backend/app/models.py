@@ -29,6 +29,7 @@ class Company(Base):
     page_changes = relationship("PageChange", back_populates="company", cascade="all, delete-orphan")
     errors = relationship("ErrorLog", back_populates="company", cascade="all, delete-orphan")
     crawl_diagnostics = relationship("CrawlDiagnostic", back_populates="company", cascade="all, delete-orphan")
+    ingestion_retries = relationship("IngestionRetry", back_populates="company", cascade="all, delete-orphan")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -55,6 +56,11 @@ class DocumentRegistry(Base):
     classifier_confidence = Column(Float, nullable=True)
     classifier_version = Column(String(50), nullable=True)
     needs_review = Column(Boolean, default=False)
+    source_type = Column(String(50), nullable=True)
+    source_domain = Column(String(255), nullable=True, index=True)
+    discovery_strategy = Column(String(100), nullable=True, index=True)
+    first_seen_at = Column(DateTime, nullable=True)
+    last_seen_at = Column(DateTime, nullable=True)
     last_checked = Column(DateTime)
     created_at = Column(DateTime, server_default=func.now())
 
@@ -216,7 +222,29 @@ class CrawlDiagnostic(Base):
 
 
 # -----------------------------------------------------------------------------
-# 11. Job Runs (operational history for queued/direct executions)
+# 11. Ingestion Retry Queue / Dead Letter
+# -----------------------------------------------------------------------------
+class IngestionRetry(Base):
+    __tablename__ = "ingestion_retries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey("companies.id", ondelete="SET NULL"), nullable=True)
+    document_url = Column(Text, nullable=False)
+    source_domain = Column(String(255), nullable=True, index=True)
+    reason_code = Column(String(100), nullable=False)
+    failure_count = Column(Integer, default=1)
+    next_retry_at = Column(DateTime, nullable=True)
+    status = Column(String(30), nullable=False, default="PENDING")  # PENDING|DEAD|RESOLVED
+    last_error = Column(Text, nullable=True)
+    last_attempt_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, onupdate=func.now())
+
+    company = relationship("Company", back_populates="ingestion_retries")
+
+
+# -----------------------------------------------------------------------------
+# 12. Job Runs (operational history for queued/direct executions)
 # -----------------------------------------------------------------------------
 class JobRun(Base):
     __tablename__ = "job_runs"

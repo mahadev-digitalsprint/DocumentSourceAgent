@@ -15,6 +15,7 @@ class PipelineState(TypedDict):
 
     # ── M1 Crawl output ────────────────────────────────────────────────────
     pdf_urls: List[str]             # all discovered PDF URLs
+    pdf_sources: Dict[str, Dict[str, Any]]  # url -> source metadata
     crawl_errors: List[str]
 
     # ── M2 WebWatch output ─────────────────────────────────────────────────

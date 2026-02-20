@@ -38,6 +38,7 @@ class MigrationSafetyTests(unittest.TestCase):
                 self.assertIn("alembic_version", tables)
                 self.assertIn("job_runs", tables)
                 self.assertIn("crawl_diagnostics", tables)
+                self.assertIn("ingestion_retries", tables)
                 columns = {column["name"] for column in inspector.get_columns("job_runs")}
                 self.assertIn("duration_ms", columns)
                 self.assertIn("items_processed", columns)
@@ -46,6 +47,11 @@ class MigrationSafetyTests(unittest.TestCase):
                 self.assertIn("classifier_confidence", doc_columns)
                 self.assertIn("classifier_version", doc_columns)
                 self.assertIn("needs_review", doc_columns)
+                self.assertIn("source_type", doc_columns)
+                self.assertIn("source_domain", doc_columns)
+                self.assertIn("discovery_strategy", doc_columns)
+                self.assertIn("first_seen_at", doc_columns)
+                self.assertIn("last_seen_at", doc_columns)
                 engine.dispose()
             finally:
                 if original_database_url is None:

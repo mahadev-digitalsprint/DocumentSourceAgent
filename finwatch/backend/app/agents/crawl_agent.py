@@ -8,7 +8,7 @@ import re
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
-from typing import Any, List, Set
+from typing import Any, Dict, List, Set
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 from bs4 import BeautifulSoup
@@ -65,6 +65,7 @@ def crawl_agent(state: PipelineState) -> dict:
         mode = "auto"
 
     all_urls: Set[str] = set()
+    source_meta_by_url: Dict[str, dict] = {}
     crawl_errors: List[str] = []
 
     local_first = [
@@ -86,15 +87,30 @@ def crawl_agent(state: PipelineState) -> dict:
         try:
             urls = strategy_func()
             all_urls.update(urls)
+            for url in urls:
+                normalized = _normalize_url(url)
+                if not normalized:
+                    continue
+                source_meta_by_url[normalized] = {
+                    "discovery_strategy": strategy_name,
+                    "source_domain": urlparse(normalized).netloc.lower(),
+                    "source_type": _source_type_for(strategy_name, normalized),
+                }
             logger.info("[CRAWL] %s: +%s urls", strategy_name, len(urls))
         except Exception as exc:
             logger.warning("[CRAWL] %s failed: %s", strategy_name, exc)
             crawl_errors.append(f"{strategy_name}: {exc}")
 
     filtered = _filter_urls(list(all_urls))
+    filtered_sources = {url: source_meta_by_url[url] for url in filtered if url in source_meta_by_url}
     _persist_diagnostics(runtime)
     logger.info("[CRAWL] Finished %s | discovered=%s", clean_name, len(filtered))
-    return {"pdf_urls": filtered, "crawl_errors": crawl_errors, "company_name_clean": clean_name}
+    return {
+        "pdf_urls": filtered,
+        "pdf_sources": filtered_sources,
+        "crawl_errors": crawl_errors,
+        "company_name_clean": clean_name,
+    }
 
 
 def _clean_company_name(raw_name: str, website_url: str = "") -> str:
@@ -482,3 +498,13 @@ def _normalize_url(url: str) -> str:
 
 def _is_probable_pdf_url(url: str) -> bool:
     return ".pdf" in (url or "").lower()
+
+
+def _source_type_for(strategy_name: str, url: str) -> str:
+    strategy = (strategy_name or "").strip().upper()
+    domain = (urlparse(url).netloc or "").lower()
+    if strategy in {"FIRECRAWL", "TAVILY"}:
+        return "SEARCH_API"
+    if strategy == "EDGAR" or "sec.gov" in domain:
+        return "REGULATORY"
+    return "WEBSITE"

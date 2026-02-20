@@ -62,6 +62,16 @@ def _ensure_document_registry_columns(bind):
         op.add_column("document_registry", sa.Column("classifier_version", sa.String(length=50), nullable=True))
     if "needs_review" not in columns:
         op.add_column("document_registry", sa.Column("needs_review", sa.Boolean(), nullable=True))
+    if "source_type" not in columns:
+        op.add_column("document_registry", sa.Column("source_type", sa.String(length=50), nullable=True))
+    if "source_domain" not in columns:
+        op.add_column("document_registry", sa.Column("source_domain", sa.String(length=255), nullable=True))
+    if "discovery_strategy" not in columns:
+        op.add_column("document_registry", sa.Column("discovery_strategy", sa.String(length=100), nullable=True))
+    if "first_seen_at" not in columns:
+        op.add_column("document_registry", sa.Column("first_seen_at", sa.DateTime(), nullable=True))
+    if "last_seen_at" not in columns:
+        op.add_column("document_registry", sa.Column("last_seen_at", sa.DateTime(), nullable=True))
 
 
 def upgrade() -> None:
@@ -76,6 +86,16 @@ def downgrade() -> None:
     existing_tables = _table_names(bind)
     if "document_registry" in existing_tables:
         columns = _column_names(bind, "document_registry")
+        if "last_seen_at" in columns:
+            op.drop_column("document_registry", "last_seen_at")
+        if "first_seen_at" in columns:
+            op.drop_column("document_registry", "first_seen_at")
+        if "discovery_strategy" in columns:
+            op.drop_column("document_registry", "discovery_strategy")
+        if "source_domain" in columns:
+            op.drop_column("document_registry", "source_domain")
+        if "source_type" in columns:
+            op.drop_column("document_registry", "source_type")
         if "needs_review" in columns:
             op.drop_column("document_registry", "needs_review")
         if "classifier_version" in columns:

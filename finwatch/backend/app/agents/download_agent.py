@@ -8,14 +8,16 @@ import logging
 import os
 import shutil
 import time
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 import httpx
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.models import ChangeLog, DocumentRegistry, ErrorLog
+from app.models import ChangeLog, DocumentRegistry, ErrorLog, IngestionRetry
 from app.utils.hashing import sha256_file
 from app.utils.http_client import RETRYABLE_STATUSES, is_blocked_response, request_with_retries
 from app.utils.time import utc_now_naive
@@ -26,6 +28,7 @@ settings = get_settings()
 
 PDF_SIGNATURE = b"%PDF-"
 USER_AGENT = "Mozilla/5.0 FinWatch/2.2"
+MAX_RETRY_ATTEMPTS = 3
 
 
 def download_agent(state: PipelineState) -> dict:
@@ -35,11 +38,13 @@ def download_agent(state: PipelineState) -> dict:
     db = SessionLocal()
     downloaded: List[Dict[str, Any]] = []
     errors: List[Dict[str, str]] = list(state.get("errors", []))
+    source_map = dict(state.get("pdf_sources", {}))
 
     try:
-        for url in state.get("pdf_urls", []):
+        queue = _build_download_queue(db, state)
+        for url in queue:
             try:
-                result = _process_one(db, url, state)
+                result = _process_one(db, url, state, source_map.get(url))
                 if result:
                     downloaded.append(result)
             except Exception as exc:
@@ -54,13 +59,18 @@ def download_agent(state: PipelineState) -> dict:
     return {"downloaded_docs": downloaded, "errors": errors}
 
 
-def _process_one(db: Session, url: str, state: PipelineState) -> Optional[Dict[str, Any]]:
+def _process_one(db: Session, url: str, state: PipelineState, source_meta: Optional[dict] = None) -> Optional[Dict[str, Any]]:
+    source_meta = source_meta or _infer_source_from_url(url)
+    seen_at = utc_now_naive()
     etag, last_mod = _head_request(url)
     existing: Optional[DocumentRegistry] = db.query(DocumentRegistry).filter(DocumentRegistry.document_url == url).first()
 
     if existing and etag and existing.etag == etag and existing.last_modified_header == last_mod:
         existing.status = "UNCHANGED"
-        existing.last_checked = utc_now_naive()
+        existing.last_checked = seen_at
+        existing.last_seen_at = seen_at
+        _apply_source_metadata(existing, source_meta, seen_at)
+        _resolve_retry_entry(db, state["company_id"], url)
         db.commit()
         return {"url": url, "status": "UNCHANGED", "doc_id": existing.id}
 
@@ -72,19 +82,30 @@ def _process_one(db: Session, url: str, state: PipelineState) -> Optional[Dict[s
     )
 
     if not download_outcome.get("ok"):
+        error_type = str(download_outcome.get("error_type") or "DOWNLOAD_FAILED")
+        error_message = str(download_outcome.get("error_message") or "download failed")
         _log_error(
             db,
             state["company_id"],
             url,
             "download",
-            str(download_outcome.get("error_type") or "DOWNLOAD_FAILED"),
-            str(download_outcome.get("error_message") or "download failed"),
+            error_type,
+            error_message,
+        )
+        _upsert_retry_entry(
+            db,
+            company_id=state["company_id"],
+            url=url,
+            reason_code=error_type,
+            error_message=error_message,
         )
         if existing:
             existing.status = "FAILED"
-            existing.last_checked = utc_now_naive()
+            existing.last_checked = seen_at
+            existing.last_seen_at = seen_at
+            _apply_source_metadata(existing, source_meta, seen_at)
             db.commit()
-            return {"url": url, "status": "FAILED", "doc_id": existing.id, "reason": download_outcome.get("error_message")}
+            return {"url": url, "status": "FAILED", "doc_id": existing.id, "reason": error_message}
         return None
 
     file_path = str(download_outcome["path"])
@@ -111,7 +132,10 @@ def _process_one(db: Session, url: str, state: PipelineState) -> Optional[Dict[s
 
         existing.etag = etag
         existing.last_modified_header = last_mod
-        existing.last_checked = utc_now_naive()
+        existing.last_checked = seen_at
+        existing.last_seen_at = seen_at
+        _apply_source_metadata(existing, source_meta, seen_at)
+        _resolve_retry_entry(db, state["company_id"], url)
         db.commit()
         return {
             "url": url,
@@ -131,11 +155,17 @@ def _process_one(db: Session, url: str, state: PipelineState) -> Optional[Dict[s
         doc_type="Unknown",
         file_size_bytes=_safe_size(file_path),
         status="NEW",
-        last_checked=utc_now_naive(),
+        source_type=source_meta.get("source_type"),
+        source_domain=source_meta.get("source_domain"),
+        discovery_strategy=source_meta.get("discovery_strategy"),
+        first_seen_at=seen_at,
+        last_seen_at=seen_at,
+        last_checked=seen_at,
     )
     db.add(record)
     db.flush()
     _record_change(db, record.id, "NEW", None, new_hash)
+    _resolve_retry_entry(db, state["company_id"], url)
     db.commit()
     db.refresh(record)
     logger.info("[M3-DOWNLOAD] NEW: %s -> %s", url, file_path)
@@ -146,6 +176,36 @@ def _process_one(db: Session, url: str, state: PipelineState) -> Optional[Dict[s
         "local_path": file_path,
         "deduplicated": deduped,
     }
+
+
+def _build_download_queue(db: Session, state: PipelineState) -> List[str]:
+    now = utc_now_naive()
+    seen = set()
+    queue: List[str] = []
+
+    for url in state.get("pdf_urls", []):
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        queue.append(url)
+
+    retry_rows = (
+        db.query(IngestionRetry)
+        .filter(
+            IngestionRetry.company_id == state["company_id"],
+            IngestionRetry.status == "PENDING",
+            IngestionRetry.failure_count < MAX_RETRY_ATTEMPTS,
+            ((IngestionRetry.next_retry_at.is_(None)) | (IngestionRetry.next_retry_at <= now)),
+        )
+        .order_by(IngestionRetry.next_retry_at.asc(), IngestionRetry.created_at.asc())
+        .limit(50)
+        .all()
+    )
+    for row in retry_rows:
+        if row.document_url and row.document_url not in seen:
+            queue.append(row.document_url)
+            seen.add(row.document_url)
+    return queue
 
 
 def _head_request(url: str):
@@ -236,6 +296,96 @@ def _resolve_global_dedupe_path(db: Session, file_hash: str, exclude_doc_id: Opt
     if not existing or not existing.local_path:
         return None
     return existing.local_path if os.path.exists(existing.local_path) else None
+
+
+def _infer_source_from_url(url: str) -> dict:
+    domain = (urlparse(url).netloc or "").lower()
+    source_type = "REGULATORY" if "sec.gov" in domain else "WEBSITE"
+    return {
+        "source_type": source_type,
+        "source_domain": domain,
+        "discovery_strategy": "UNKNOWN",
+    }
+
+
+def _apply_source_metadata(record: DocumentRegistry, source_meta: dict, seen_at) -> None:
+    if source_meta.get("source_type"):
+        record.source_type = source_meta["source_type"]
+    if source_meta.get("source_domain"):
+        record.source_domain = source_meta["source_domain"]
+    if source_meta.get("discovery_strategy"):
+        record.discovery_strategy = source_meta["discovery_strategy"]
+    if not record.first_seen_at:
+        record.first_seen_at = seen_at
+    record.last_seen_at = seen_at
+
+
+def _upsert_retry_entry(db: Session, *, company_id: int, url: str, reason_code: str, error_message: str) -> None:
+    now = utc_now_naive()
+    retry = (
+        db.query(IngestionRetry)
+        .filter(
+            IngestionRetry.company_id == company_id,
+            IngestionRetry.document_url == url,
+            IngestionRetry.status.in_(["PENDING", "DEAD"]),
+        )
+        .order_by(IngestionRetry.id.desc())
+        .first()
+    )
+    if retry:
+        retry.failure_count = int(retry.failure_count or 0) + 1
+        retry.reason_code = reason_code
+        retry.last_error = error_message[:2000]
+        retry.last_attempt_at = now
+    else:
+        retry = IngestionRetry(
+            company_id=company_id,
+            document_url=url,
+            source_domain=(urlparse(url).netloc or "").lower(),
+            reason_code=reason_code,
+            failure_count=1,
+            status="PENDING",
+            last_error=error_message[:2000],
+            last_attempt_at=now,
+        )
+        db.add(retry)
+
+    if retry.failure_count >= MAX_RETRY_ATTEMPTS:
+        retry.status = "DEAD"
+        retry.next_retry_at = None
+        db.add(
+            ErrorLog(
+                company_id=company_id,
+                document_url=url,
+                step="download",
+                error_type="DEAD_LETTER",
+                error_message=f"{reason_code}: {error_message}"[:2000],
+            )
+        )
+    else:
+        retry.status = "PENDING"
+        backoff_minutes = min(240, (2 ** retry.failure_count) * 5)
+        retry.next_retry_at = now + timedelta(minutes=backoff_minutes)
+    db.commit()
+
+
+def _resolve_retry_entry(db: Session, company_id: int, url: str) -> None:
+    rows = (
+        db.query(IngestionRetry)
+        .filter(
+            IngestionRetry.company_id == company_id,
+            IngestionRetry.document_url == url,
+            IngestionRetry.status.in_(["PENDING", "DEAD"]),
+        )
+        .all()
+    )
+    if not rows:
+        return
+    now = utc_now_naive()
+    for row in rows:
+        row.status = "RESOLVED"
+        row.next_retry_at = None
+    db.flush()
 
 
 def _looks_like_pdf(path: str) -> bool:

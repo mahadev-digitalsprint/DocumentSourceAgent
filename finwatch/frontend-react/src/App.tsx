@@ -15,6 +15,9 @@ const ChangesCenterPage = lazy(() => import('./modules/changes/ChangesCenterPage
 const EmailAlertsPage = lazy(() => import('./modules/alerts/EmailAlertsPage').then((m) => ({ default: m.EmailAlertsPage })))
 const SystemSettingsPage = lazy(() => import('./modules/settings/SystemSettingsPage').then((m) => ({ default: m.SystemSettingsPage })))
 const CrawlerOpsPage = lazy(() => import('./modules/crawler/CrawlerOpsPage').then((m) => ({ default: m.CrawlerOpsPage })))
+const SourceIntelligencePage = lazy(() =>
+  import('./modules/sources/SourceIntelligencePage').then((m) => ({ default: m.SourceIntelligencePage })),
+)
 
 type AppModule =
   | 'DASHBOARD'
@@ -28,6 +31,7 @@ type AppModule =
   | 'ALERTS'
   | 'SETTINGS'
   | 'CRAWLER'
+  | 'SOURCES'
 
 function renderModule(module: AppModule) {
   switch (module) {
@@ -53,6 +57,8 @@ function renderModule(module: AppModule) {
       return <SystemSettingsPage />
     case 'CRAWLER':
       return <CrawlerOpsPage />
+    case 'SOURCES':
+      return <SourceIntelligencePage />
   }
 }
 
@@ -150,6 +156,14 @@ export default function App() {
             }`}
           >
             Crawler Ops
+          </button>
+          <button
+            onClick={() => setModule('SOURCES')}
+            className={`rounded-md px-3 py-1 text-sm font-semibold ${
+              module === 'SOURCES' ? 'bg-accent text-slate-950' : 'bg-slate-800 text-slate-200'
+            }`}
+          >
+            Source Intel
           </button>
         </div>
       </nav>
