@@ -13,6 +13,7 @@ import type {
   CrawlDiagnosticsSummary,
   DirectRunResult,
   EmailAlertConfig,
+  EmailAlertSimpleConfig,
   EmailAlertSaveInput,
   DocumentRecord,
   DocumentMetadataRecord,
@@ -165,12 +166,22 @@ export const webwatchApi = {
 
 export const alertsApi = {
   getConfig: () => request<EmailAlertConfig>('/alerts/'),
+  getSimpleConfig: () => request<EmailAlertSimpleConfig>('/alerts/simple'),
   saveConfig: (payload: EmailAlertSaveInput) =>
     request<{ saved: boolean }>('/alerts/', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
-  testEmail: () => request<{ sent: boolean; error?: string }>('/alerts/test', { method: 'POST' }),
+  saveSimpleConfig: (receiverEmail: string) =>
+    request<{ saved: boolean; configured: boolean; receiver_email: string }>('/alerts/simple', {
+      method: 'POST',
+      body: JSON.stringify({ receiver_email: receiverEmail }),
+    }),
+  testEmail: (receiverEmail?: string) =>
+    request<{ sent: boolean; error?: string }>('/alerts/test', {
+      method: 'POST',
+      body: JSON.stringify(receiverEmail ? { receiver_email: receiverEmail } : {}),
+    }),
 }
 
 export const settingsApi = {

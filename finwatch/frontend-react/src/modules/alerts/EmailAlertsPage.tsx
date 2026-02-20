@@ -4,39 +4,26 @@ import { alertsApi } from '../../shared/api'
 import { SectionCard } from '../dashboard/SectionCard'
 
 export function EmailAlertsPage() {
-  const [smtpHost, setSmtpHost] = useState('smtp.gmail.com')
-  const [smtpPort, setSmtpPort] = useState(587)
-  const [smtpUser, setSmtpUser] = useState('')
-  const [smtpPassword, setSmtpPassword] = useState('')
-  const [emailFrom, setEmailFrom] = useState('')
-  const [recipientsRaw, setRecipientsRaw] = useState('')
-  const [sendOnChange, setSendOnChange] = useState(true)
-  const [dailyDigestHour, setDailyDigestHour] = useState(6)
+  const [receiverEmail, setReceiverEmail] = useState('')
   const [message, setMessage] = useState('')
   const [errorMessage, setErrorMessage] = useState('')
 
   const configQuery = useQuery({
-    queryKey: ['alertConfig'],
-    queryFn: alertsApi.getConfig,
+    queryKey: ['alertSimpleConfig'],
+    queryFn: alertsApi.getSimpleConfig,
   })
 
   useEffect(() => {
     const cfg = configQuery.data
     if (!cfg) return
-    setSmtpHost(cfg.smtp_host ?? 'smtp.gmail.com')
-    setSmtpPort(cfg.smtp_port ?? 587)
-    setSmtpUser(cfg.smtp_user ?? '')
-    setEmailFrom(cfg.email_from ?? '')
-    setRecipientsRaw((cfg.recipients ?? []).join('\n'))
-    setSendOnChange(cfg.send_on_change ?? true)
-    setDailyDigestHour(cfg.daily_digest_hour ?? 6)
+    setReceiverEmail(cfg.receiver_email ?? '')
   }, [configQuery.data])
 
   const saveMutation = useMutation({
-    mutationFn: alertsApi.saveConfig,
+    mutationFn: (email: string) => alertsApi.saveSimpleConfig(email),
     onSuccess: (result) => {
       setErrorMessage('')
-      setMessage(result.saved ? 'Email configuration saved.' : 'Configuration save returned unexpected result.')
+      setMessage(result.saved ? 'Receiver email saved.' : 'Save completed with unexpected response.')
     },
     onError: (error: Error) => {
       setMessage('')
@@ -45,7 +32,7 @@ export function EmailAlertsPage() {
   })
 
   const testMutation = useMutation({
-    mutationFn: alertsApi.testEmail,
+    mutationFn: (email: string) => alertsApi.testEmail(email),
     onSuccess: (result) => {
       if (result.sent) {
         setErrorMessage('')
@@ -63,107 +50,28 @@ export function EmailAlertsPage() {
 
   const onSave = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    const recipients = recipientsRaw
-      .split('\n')
-      .map((v) => v.trim())
-      .filter(Boolean)
-
-    saveMutation.mutate({
-      smtp_host: smtpHost,
-      smtp_port: smtpPort,
-      smtp_user: smtpUser,
-      smtp_password: smtpPassword,
-      email_from: emailFrom,
-      recipients,
-      send_on_change: sendOnChange,
-      daily_digest_hour: dailyDigestHour,
-    })
+    saveMutation.mutate(receiverEmail)
   }
 
   return (
     <main className="mx-auto min-h-screen max-w-4xl px-4 py-6 md:px-8">
       <header className="mb-6 rounded-2xl border border-slate-700/70 bg-panel/80 p-5 shadow-panel">
         <h1 className="text-2xl font-semibold text-slate-50 md:text-3xl">Email Alerts</h1>
-        <p className="mt-2 text-sm text-slate-300">Configure SMTP and recipients for change notifications and digests.</p>
+        <p className="mt-2 text-sm text-slate-300">Only receiver email is required. SMTP sender is handled by backend configuration.</p>
       </header>
 
-      <SectionCard title="Email Configuration" subtitle="SMTP settings and recipient policy">
+      <SectionCard title="Receiver Setup" subtitle="Set one receiver email for all alert and digest notifications">
         <form className="space-y-4" onSubmit={onSave}>
-          <div className="grid gap-3 md:grid-cols-2">
-            <div>
-              <label className="mb-1 block text-sm text-slate-300">SMTP Host</label>
-              <input
-                value={smtpHost}
-                onChange={(event) => setSmtpHost(event.target.value)}
-                className="w-full rounded-lg border border-slate-700 bg-slate-900/50 px-3 py-2 text-sm text-slate-100 outline-none ring-accent focus:ring-2"
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-sm text-slate-300">SMTP Port</label>
-              <input
-                type="number"
-                value={smtpPort}
-                onChange={(event) => setSmtpPort(Number(event.target.value))}
-                className="w-full rounded-lg border border-slate-700 bg-slate-900/50 px-3 py-2 text-sm text-slate-100 outline-none ring-accent focus:ring-2"
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-sm text-slate-300">SMTP User</label>
-              <input
-                value={smtpUser}
-                onChange={(event) => setSmtpUser(event.target.value)}
-                className="w-full rounded-lg border border-slate-700 bg-slate-900/50 px-3 py-2 text-sm text-slate-100 outline-none ring-accent focus:ring-2"
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-sm text-slate-300">SMTP Password</label>
-              <input
-                type="password"
-                value={smtpPassword}
-                onChange={(event) => setSmtpPassword(event.target.value)}
-                className="w-full rounded-lg border border-slate-700 bg-slate-900/50 px-3 py-2 text-sm text-slate-100 outline-none ring-accent focus:ring-2"
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-sm text-slate-300">From Email</label>
-              <input
-                value={emailFrom}
-                onChange={(event) => setEmailFrom(event.target.value)}
-                className="w-full rounded-lg border border-slate-700 bg-slate-900/50 px-3 py-2 text-sm text-slate-100 outline-none ring-accent focus:ring-2"
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-sm text-slate-300">Daily Digest Hour (UTC)</label>
-              <input
-                type="number"
-                min={0}
-                max={23}
-                value={dailyDigestHour}
-                onChange={(event) => setDailyDigestHour(Number(event.target.value))}
-                className="w-full rounded-lg border border-slate-700 bg-slate-900/50 px-3 py-2 text-sm text-slate-100 outline-none ring-accent focus:ring-2"
-              />
-            </div>
-          </div>
-
           <div>
-            <label className="mb-1 block text-sm text-slate-300">Recipients (one per line)</label>
-            <textarea
-              value={recipientsRaw}
-              onChange={(event) => setRecipientsRaw(event.target.value)}
-              rows={6}
+            <label className="mb-1 block text-sm text-slate-300">Receiver Email</label>
+            <input
+              type="email"
+              value={receiverEmail}
+              onChange={(event) => setReceiverEmail(event.target.value)}
+              placeholder="receiver@company.com"
               className="w-full rounded-lg border border-slate-700 bg-slate-900/50 px-3 py-2 text-sm text-slate-100 outline-none ring-accent focus:ring-2"
             />
           </div>
-
-          <label className="inline-flex items-center gap-2 text-sm text-slate-200">
-            <input
-              type="checkbox"
-              checked={sendOnChange}
-              onChange={(event) => setSendOnChange(event.target.checked)}
-              className="h-4 w-4"
-            />
-            Send alert emails on detected changes
-          </label>
 
           <div className="flex gap-2">
             <button
@@ -171,11 +79,11 @@ export function EmailAlertsPage() {
               disabled={saveMutation.isPending}
               className="rounded-md bg-accent px-3 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-300 disabled:cursor-not-allowed disabled:bg-slate-600 disabled:text-slate-300"
             >
-              {saveMutation.isPending ? 'Saving...' : 'Save Configuration'}
+              {saveMutation.isPending ? 'Saving...' : 'Save Receiver'}
             </button>
             <button
               type="button"
-              onClick={() => testMutation.mutate()}
+              onClick={() => testMutation.mutate(receiverEmail)}
               disabled={testMutation.isPending}
               className="rounded-md bg-slate-700 px-3 py-2 text-sm font-semibold text-slate-100 hover:bg-slate-600 disabled:cursor-not-allowed disabled:bg-slate-800"
             >
@@ -183,6 +91,13 @@ export function EmailAlertsPage() {
             </button>
           </div>
         </form>
+
+        {configQuery.data ? (
+          <div className="mt-4 rounded-lg border border-slate-700/70 bg-slate-900/40 p-3 text-xs text-slate-400">
+            <p>Sender: {configQuery.data.sender_email}</p>
+            <p>Configured: {configQuery.data.configured ? 'Yes' : 'No'}</p>
+          </div>
+        ) : null}
 
         {message ? <p className="mt-3 rounded-md border border-emerald-500/40 bg-emerald-950/30 p-2 text-sm text-emerald-200">{message}</p> : null}
         {errorMessage ? <p className="mt-3 rounded-md border border-red-500/40 bg-red-950/30 p-2 text-sm text-red-200">{errorMessage}</p> : null}

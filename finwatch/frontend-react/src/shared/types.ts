@@ -182,14 +182,23 @@ export type EmailAlertConfig = {
 }
 
 export type EmailAlertSaveInput = {
-  smtp_host: string
-  smtp_port: number
-  smtp_user: string
-  smtp_password: string
-  email_from: string
-  recipients: string[]
+  smtp_host?: string
+  smtp_port?: number
+  smtp_user?: string
+  smtp_password?: string
+  email_from?: string
+  recipients?: string[]
+  receiver_email?: string
+  send_on_change?: boolean
+  daily_digest_hour?: number
+}
+
+export type EmailAlertSimpleConfig = {
+  configured: boolean
+  receiver_email: string
   send_on_change: boolean
   daily_digest_hour: number
+  sender_email: string
 }
 
 export type AppSettingMap = Record<string, string>
