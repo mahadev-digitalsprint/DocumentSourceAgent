@@ -7,12 +7,14 @@ import logging
 import os
 from datetime import datetime
 from pathlib import Path
+import time
 from typing import List, Dict, Any, Optional
 
 import httpx
 from sqlalchemy.orm import Session
 
 from app.models import DocumentRegistry, ChangeLog, ErrorLog
+from app.utils.http_client import RETRYABLE_STATUSES, request_with_retries
 from app.utils.hashing import sha256_file
 from app.workflow.state import PipelineState
 
@@ -118,8 +120,13 @@ def _process_one(db: Session, url: str, state: PipelineState) -> Optional[Dict[s
 def _head_request(url: str):
     """Returns (etag, last_modified) or (None, None) on failure."""
     try:
-        r = httpx.head(url, follow_redirects=True, timeout=10,
-                       headers={"User-Agent": "Mozilla/5.0 FinWatch/1.0"})
+        r = request_with_retries(
+            "HEAD",
+            url,
+            follow_redirects=True,
+            timeout=10,
+            headers={"User-Agent": "Mozilla/5.0 FinWatch/1.0"},
+        )
         return r.headers.get("etag"), r.headers.get("last-modified")
     except Exception:
         return None, None
@@ -131,30 +138,48 @@ def _download(url: str, slug: str, doc_type: str, base_folder: str) -> Optional[
     filename = _safe_filename(url, folder)
     dest = os.path.join(folder, filename)
 
-    try:
-        with httpx.stream("GET", url, follow_redirects=True, timeout=120,
-                          headers={"User-Agent": "Mozilla/5.0 FinWatch/1.0"}) as r:
-            r.raise_for_status()
-            ct = r.headers.get("content-type", "")
-            if "pdf" not in ct.lower() and not url.lower().endswith(".pdf"):
-                logger.warning(f"[M3-DOWNLOAD] Unexpected content-type '{ct}' for {url}")
+    attempts = 3
+    for attempt in range(attempts):
+        try:
+            with httpx.stream(
+                "GET",
+                url,
+                follow_redirects=True,
+                timeout=120,
+                headers={"User-Agent": "Mozilla/5.0 FinWatch/1.0"},
+            ) as r:
+                if r.status_code in RETRYABLE_STATUSES and attempt < attempts - 1:
+                    time.sleep(min(6.0, 0.7 * (2**attempt)))
+                    continue
+                r.raise_for_status()
+
+                if r.status_code in {401, 403, 429, 503}:
+                    logger.warning(f"[M3-DOWNLOAD] Blocked response for {url}")
+                    return None
+
+                ct = r.headers.get("content-type", "")
+                if "pdf" not in ct.lower() and not url.lower().endswith(".pdf"):
+                    logger.warning(f"[M3-DOWNLOAD] Unexpected content-type '{ct}' for {url}")
+                    return None
+                size = 0
+                with open(dest, "wb") as f:
+                    for chunk in r.iter_bytes(65536):
+                        size += len(chunk)
+                        if size > MAX_BYTES:
+                            logger.error(f"[M3-DOWNLOAD] File too large (>250MB): {url}")
+                            f.close()
+                            os.remove(dest)
+                            return None
+                        f.write(chunk)
+            return dest
+        except Exception as e:
+            if attempt >= attempts - 1:
+                logger.error(f"[M3-DOWNLOAD] Failed {url}: {e}")
+                if os.path.exists(dest):
+                    os.remove(dest)
                 return None
-            size = 0
-            with open(dest, "wb") as f:
-                for chunk in r.iter_bytes(65536):
-                    size += len(chunk)
-                    if size > MAX_BYTES:
-                        logger.error(f"[M3-DOWNLOAD] File too large (>250MB): {url}")
-                        f.close()
-                        os.remove(dest)
-                        return None
-                    f.write(chunk)
-        return dest
-    except Exception as e:
-        logger.error(f"[M3-DOWNLOAD] Failed {url}: {e}")
-        if os.path.exists(dest):
-            os.remove(dest)
-        return None
+            time.sleep(min(6.0, 0.7 * (2**attempt)))
+    return None
 
 
 def _resolve_folder(base: str, slug: str, doc_type: str) -> str:

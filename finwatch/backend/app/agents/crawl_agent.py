@@ -9,10 +9,10 @@ import xml.etree.ElementTree as ET
 from typing import Any, List, Set
 from urllib.parse import urljoin, urlparse
 
-import httpx
 from bs4 import BeautifulSoup
 
 from app.config import get_settings
+from app.utils.http_client import is_blocked_response, request_with_retries
 from app.workflow.state import PipelineState
 
 logger = logging.getLogger(__name__)
@@ -113,14 +113,11 @@ def _strategy_firecrawl(url: str) -> List[str]:
     if not settings.firecrawl_api_key:
         return []
     try:
-        response = httpx.post(
+        response = request_with_retries(
+            "POST",
             "https://api.firecrawl.dev/v1/crawl",
             headers={"Authorization": f"Bearer {settings.firecrawl_api_key}"},
-            json={
-                "url": url,
-                "limit": settings.max_crawl_pages,
-                "scrapeOptions": {"formats": ["links"]},
-            },
+            json={"url": url, "limit": settings.max_crawl_pages, "scrapeOptions": {"formats": ["links"]}},
             timeout=60,
         )
         if response.status_code in {402, 429}:
@@ -158,7 +155,8 @@ def _strategy_tavily(company_name: str, website_url: str = "") -> List[str]:
     found = []
     for query in queries:
         try:
-            response = httpx.post(
+            response = request_with_retries(
+                "POST",
                 "https://api.tavily.com/search",
                 json={
                     "api_key": settings.tavily_api_key,
@@ -184,7 +182,8 @@ def _strategy_tavily(company_name: str, website_url: str = "") -> List[str]:
 def _strategy_edgar(company_name: str) -> List[str]:
     try:
         query = company_name.replace(" ", "+")
-        response = httpx.get(
+        response = request_with_retries(
+            "GET",
             f"https://efts.sec.gov/LATEST/search-index?q=%22{query}%22&dateRange=custom&startdt=2020-01-01&forms=10-K,10-Q,20-F",
             timeout=15,
             headers={"User-Agent": "FinWatch contact@finwatch.local"},
@@ -208,8 +207,11 @@ def _strategy_sitemap(base_url: str) -> List[str]:
             continue
         seen.add(sitemap_url)
         try:
-            response = httpx.get(sitemap_url, timeout=15, headers={"User-Agent": USER_AGENT})
+            response = request_with_retries("GET", sitemap_url, timeout=15, headers={"User-Agent": USER_AGENT})
             if response.status_code >= 400:
+                continue
+            if is_blocked_response(response):
+                logger.warning("[CRAWL] Sitemap blocked for %s", sitemap_url)
                 continue
             root_el = ET.fromstring(response.text)
             for loc in root_el.findall(".//{*}loc"):
@@ -236,8 +238,17 @@ def _strategy_bs4(base_url: str, depth: int = 3) -> List[str]:
             return
         visited.add(url)
         try:
-            response = httpx.get(url, follow_redirects=True, timeout=12, headers={"User-Agent": USER_AGENT})
+            response = request_with_retries(
+                "GET",
+                url,
+                follow_redirects=True,
+                timeout=12,
+                headers={"User-Agent": USER_AGENT},
+            )
             response.raise_for_status()
+            if is_blocked_response(response):
+                logger.warning("[CRAWL] Blocked page while crawling %s", url)
+                return
             soup = BeautifulSoup(response.text, "html.parser")
             page_base = f"{urlparse(url).scheme}://{urlparse(url).netloc}"
 
@@ -266,7 +277,16 @@ def _strategy_bs4(base_url: str, depth: int = 3) -> List[str]:
 
 def _strategy_regex(url: str) -> List[str]:
     try:
-        response = httpx.get(url, follow_redirects=True, timeout=12, headers={"User-Agent": USER_AGENT})
+        response = request_with_retries(
+            "GET",
+            url,
+            follow_redirects=True,
+            timeout=12,
+            headers={"User-Agent": USER_AGENT},
+        )
+        if is_blocked_response(response):
+            logger.warning("[CRAWL] Regex scan blocked for %s", url)
+            return []
         matches = PDF_REGEX.findall(response.text)
         return list({normalized for normalized in (_normalize_url(match) for match in matches) if normalized})
     except Exception:
