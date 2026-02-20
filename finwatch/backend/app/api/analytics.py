@@ -1,7 +1,7 @@
 """Analytics API for operational and document intelligence summaries."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -10,13 +10,14 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import ChangeLog, Company, DocumentRegistry, ErrorLog, JobRun, PageChange
+from app.utils.time import utc_now_naive
 
 router = APIRouter()
 
 
 @router.get("/overview")
 def overview(hours: int = Query(default=24, ge=1, le=24 * 30), db: Session = Depends(get_db)):
-    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    cutoff = utc_now_naive() - timedelta(hours=hours)
     return {
         "window_hours": hours,
         "companies_total": db.query(func.count(Company.id)).scalar() or 0,
@@ -51,7 +52,7 @@ def company_activity(
     limit: int = Query(default=20, ge=1, le=200),
     db: Session = Depends(get_db),
 ):
-    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    cutoff = utc_now_naive() - timedelta(hours=hours)
 
     doc_counts = (
         db.query(DocumentRegistry.company_id, func.count(DocumentRegistry.id).label("documents"))
@@ -108,7 +109,7 @@ def change_trend(
     company_id: Optional[int] = None,
     db: Session = Depends(get_db),
 ):
-    cutoff = datetime.utcnow() - timedelta(days=days)
+    cutoff = utc_now_naive() - timedelta(days=days)
 
     doc_query = db.query(
         func.date(ChangeLog.detected_at).label("day"),
@@ -152,7 +153,7 @@ def job_runs(
     hours: int = Query(default=24, ge=1, le=24 * 30),
     db: Session = Depends(get_db),
 ):
-    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    cutoff = utc_now_naive() - timedelta(hours=hours)
     rows = (
         db.query(JobRun.status, func.count(JobRun.id).label("count"))
         .filter(JobRun.created_at >= cutoff)
@@ -171,7 +172,7 @@ def doc_change_types(
     company_id: Optional[int] = None,
     db: Session = Depends(get_db),
 ):
-    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    cutoff = utc_now_naive() - timedelta(hours=hours)
 
     query = db.query(ChangeLog.change_type, func.count(ChangeLog.id).label("count")).join(
         DocumentRegistry, ChangeLog.document_id == DocumentRegistry.id

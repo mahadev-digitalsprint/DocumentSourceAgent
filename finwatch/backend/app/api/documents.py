@@ -162,8 +162,9 @@ def get_change_logs(
     limit: int = Query(default=1000, ge=1, le=5000),
     db: Session = Depends(get_db),
 ):
-    from datetime import datetime, timedelta
-    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    from datetime import timedelta
+
+    cutoff = utc_now_naive() - timedelta(hours=hours)
     q = (
         db.query(ChangeLog, DocumentRegistry, Company)
         .join(DocumentRegistry, ChangeLog.document_id == DocumentRegistry.id)

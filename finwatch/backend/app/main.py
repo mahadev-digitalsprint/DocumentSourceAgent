@@ -1,6 +1,7 @@
 """FastAPI main application."""
 from __future__ import annotations
 
+import importlib.util
 import logging
 
 from fastapi import FastAPI
@@ -53,7 +54,11 @@ def startup_db_migrations():
         except Exception as exc:
             if settings.migration_strict:
                 raise
-            logger.warning("[MIGRATION] Failed to run Alembic upgrade (%s). Falling back to create_all.", exc)
+            alembic_available = importlib.util.find_spec("alembic") is not None
+            if alembic_available:
+                logger.warning("[MIGRATION] Failed to run Alembic upgrade (%s). Falling back to create_all.", exc)
+            else:
+                logger.info("[MIGRATION] Alembic package not installed; using create_all fallback.")
             models.Base.metadata.create_all(bind=engine)
         ensure_runtime_schema_compatibility()
     scheduler_loop.start()

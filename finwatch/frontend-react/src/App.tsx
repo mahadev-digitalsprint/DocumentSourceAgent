@@ -1,4 +1,4 @@
-import { Suspense, lazy, useState } from 'react'
+import { Suspense, lazy, useEffect, useState } from 'react'
 
 const DashboardPage = lazy(() => import('./modules/dashboard/DashboardPage').then((m) => ({ default: m.DashboardPage })))
 const CompanyManagerPage = lazy(() => import('./modules/companies/CompanyManagerPage').then((m) => ({ default: m.CompanyManagerPage })))
@@ -33,6 +33,37 @@ type AppModule =
   | 'CRAWLER'
   | 'SOURCES'
 
+type ModuleGroup = 'Operations' | 'Intelligence' | 'Platform'
+
+type ModuleSpec = {
+  id: AppModule
+  label: string
+  group: ModuleGroup
+  hint: string
+}
+
+const MODULES: ModuleSpec[] = [
+  { id: 'DASHBOARD', label: 'Dashboard', group: 'Operations', hint: 'Live KPIs and status' },
+  { id: 'COMPANIES', label: 'Companies', group: 'Operations', hint: 'Manage tracked entities' },
+  { id: 'JOBS', label: 'Jobs Monitor', group: 'Operations', hint: 'Queue/direct runs and scheduler' },
+  { id: 'CRAWLER', label: 'Crawler Ops', group: 'Operations', hint: 'Diagnostics and cooldown control' },
+  { id: 'DOCUMENTS', label: 'Documents', group: 'Intelligence', hint: 'Search and inspect files' },
+  { id: 'METADATA', label: 'Metadata', group: 'Intelligence', hint: 'Classifier outputs and review queue' },
+  { id: 'WEBWATCH', label: 'Web Watcher', group: 'Intelligence', hint: 'Website diff tracking' },
+  { id: 'SOURCES', label: 'Source Intel', group: 'Intelligence', hint: 'Domain yield and dead-letter queue' },
+  { id: 'ANALYTICS', label: 'Analytics', group: 'Intelligence', hint: 'Trends and operational metrics' },
+  { id: 'CHANGES', label: 'Changes', group: 'Intelligence', hint: 'Document/page change center' },
+  { id: 'ALERTS', label: 'Email Alerts', group: 'Platform', hint: 'Receiver-only notifications' },
+  { id: 'SETTINGS', label: 'Settings', group: 'Platform', hint: 'Runtime and health checks' },
+]
+
+const MODULE_GROUPS: ModuleGroup[] = ['Operations', 'Intelligence', 'Platform']
+
+const MODULE_BY_ID = MODULES.reduce<Record<AppModule, ModuleSpec>>((acc, item) => {
+  acc[item.id] = item
+  return acc
+}, {} as Record<AppModule, ModuleSpec>)
+
 function renderModule(module: AppModule) {
   switch (module) {
     case 'DASHBOARD':
@@ -63,120 +94,95 @@ function renderModule(module: AppModule) {
 }
 
 export default function App() {
-  const [module, setModule] = useState<AppModule>('DASHBOARD')
+  const [module, setModule] = useState<AppModule>(() => {
+    const fromStorage = window.localStorage.getItem('finwatch.activeModule')
+    const valid = MODULES.find((item) => item.id === fromStorage)
+    return (valid?.id as AppModule) ?? 'DASHBOARD'
+  })
+  const activeSpec = MODULE_BY_ID[module]
+
+  useEffect(() => {
+    window.localStorage.setItem('finwatch.activeModule', module)
+  }, [module])
+
+  const navButtonClass = (isActive: boolean) =>
+    `w-full rounded-lg border px-3 py-2 text-left transition ${
+      isActive
+        ? 'border-accent/70 bg-accent/15 text-accent'
+        : 'border-slate-700/70 bg-slate-900/35 text-slate-200 hover:border-slate-500 hover:bg-slate-800/70'
+    }`
 
   return (
-    <div>
-      <nav className="sticky top-0 z-20 border-b border-slate-700/70 bg-bg/90 backdrop-blur">
-        <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-2 px-4 py-3 md:px-8">
-          <button
-            onClick={() => setModule('DASHBOARD')}
-            className={`rounded-md px-3 py-1 text-sm font-semibold ${
-              module === 'DASHBOARD' ? 'bg-accent text-slate-950' : 'bg-slate-800 text-slate-200'
-            }`}
-          >
-            Dashboard
-          </button>
-          <button
-            onClick={() => setModule('COMPANIES')}
-            className={`rounded-md px-3 py-1 text-sm font-semibold ${
-              module === 'COMPANIES' ? 'bg-accent text-slate-950' : 'bg-slate-800 text-slate-200'
-            }`}
-          >
-            Company Manager
-          </button>
-          <button
-            onClick={() => setModule('JOBS')}
-            className={`rounded-md px-3 py-1 text-sm font-semibold ${
-              module === 'JOBS' ? 'bg-accent text-slate-950' : 'bg-slate-800 text-slate-200'
-            }`}
-          >
-            Jobs Monitor
-          </button>
-          <button
-            onClick={() => setModule('DOCUMENTS')}
-            className={`rounded-md px-3 py-1 text-sm font-semibold ${
-              module === 'DOCUMENTS' ? 'bg-accent text-slate-950' : 'bg-slate-800 text-slate-200'
-            }`}
-          >
-            Documents
-          </button>
-          <button
-            onClick={() => setModule('WEBWATCH')}
-            className={`rounded-md px-3 py-1 text-sm font-semibold ${
-              module === 'WEBWATCH' ? 'bg-accent text-slate-950' : 'bg-slate-800 text-slate-200'
-            }`}
-          >
-            Web Watcher
-          </button>
-          <button
-            onClick={() => setModule('METADATA')}
-            className={`rounded-md px-3 py-1 text-sm font-semibold ${
-              module === 'METADATA' ? 'bg-accent text-slate-950' : 'bg-slate-800 text-slate-200'
-            }`}
-          >
-            Metadata
-          </button>
-          <button
-            onClick={() => setModule('ANALYTICS')}
-            className={`rounded-md px-3 py-1 text-sm font-semibold ${
-              module === 'ANALYTICS' ? 'bg-accent text-slate-950' : 'bg-slate-800 text-slate-200'
-            }`}
-          >
-            Analytics
-          </button>
-          <button
-            onClick={() => setModule('CHANGES')}
-            className={`rounded-md px-3 py-1 text-sm font-semibold ${
-              module === 'CHANGES' ? 'bg-accent text-slate-950' : 'bg-slate-800 text-slate-200'
-            }`}
-          >
-            Changes
-          </button>
-          <button
-            onClick={() => setModule('ALERTS')}
-            className={`rounded-md px-3 py-1 text-sm font-semibold ${
-              module === 'ALERTS' ? 'bg-accent text-slate-950' : 'bg-slate-800 text-slate-200'
-            }`}
-          >
-            Email Alerts
-          </button>
-          <button
-            onClick={() => setModule('SETTINGS')}
-            className={`rounded-md px-3 py-1 text-sm font-semibold ${
-              module === 'SETTINGS' ? 'bg-accent text-slate-950' : 'bg-slate-800 text-slate-200'
-            }`}
-          >
-            Settings
-          </button>
-          <button
-            onClick={() => setModule('CRAWLER')}
-            className={`rounded-md px-3 py-1 text-sm font-semibold ${
-              module === 'CRAWLER' ? 'bg-accent text-slate-950' : 'bg-slate-800 text-slate-200'
-            }`}
-          >
-            Crawler Ops
-          </button>
-          <button
-            onClick={() => setModule('SOURCES')}
-            className={`rounded-md px-3 py-1 text-sm font-semibold ${
-              module === 'SOURCES' ? 'bg-accent text-slate-950' : 'bg-slate-800 text-slate-200'
-            }`}
-          >
-            Source Intel
-          </button>
-        </div>
-      </nav>
-
-      <Suspense
-        fallback={
-          <div className="mx-auto max-w-7xl px-4 py-8 text-sm text-slate-400 md:px-8">
-            Loading module...
+    <div className="mx-auto flex min-h-screen max-w-[1600px] gap-4 px-4 py-4 md:px-6">
+      <aside className="hidden w-72 shrink-0 md:block">
+        <div className="sticky top-4 rounded-2xl border border-slate-700/70 bg-panel/80 p-4 shadow-panel">
+          <div className="mb-4 border-b border-slate-700/70 pb-4">
+            <p className="text-xs uppercase tracking-widest text-cyan-300">FinWatch</p>
+            <h1 className="mt-2 text-xl font-semibold text-slate-50">Document Intelligence Console</h1>
           </div>
-        }
-      >
-        {renderModule(module)}
-      </Suspense>
+          <div className="space-y-4">
+            {MODULE_GROUPS.map((group) => (
+              <div key={group}>
+                <p className="mb-2 text-xs uppercase tracking-widest text-slate-400">{group}</p>
+                <div className="space-y-2">
+                  {MODULES.filter((item) => item.group === group).map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => setModule(item.id)}
+                      className={navButtonClass(module === item.id)}
+                    >
+                      <p className="text-sm font-semibold">{item.label}</p>
+                      <p className="text-xs text-slate-400">{item.hint}</p>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </aside>
+
+      <div className="flex-1">
+        <header className="mb-4 rounded-2xl border border-slate-700/70 bg-panel/80 p-4 shadow-panel">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-xs uppercase tracking-widest text-cyan-300">{activeSpec.group}</p>
+              <h2 className="mt-1 text-2xl font-semibold text-slate-50">{activeSpec.label}</h2>
+              <p className="mt-1 text-sm text-slate-300">{activeSpec.hint}</p>
+            </div>
+            <p className="rounded-md border border-slate-700/70 bg-slate-900/40 px-3 py-1 text-xs text-slate-400">
+              {new Date().toISOString().replace('T', ' ').slice(0, 16)} UTC
+            </p>
+          </div>
+          <div className="mt-4 flex gap-2 overflow-x-auto pb-1 md:hidden">
+            {MODULES.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setModule(item.id)}
+                className={`whitespace-nowrap rounded-md border px-3 py-1 text-xs font-semibold ${
+                  module === item.id
+                    ? 'border-accent/70 bg-accent text-slate-950'
+                    : 'border-slate-700 bg-slate-900/50 text-slate-200'
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </header>
+
+        <Suspense
+          fallback={
+            <div className="rounded-2xl border border-slate-700/70 bg-panel/70 px-4 py-8 text-sm text-slate-300">
+              Loading module...
+            </div>
+          }
+        >
+          {renderModule(module)}
+        </Suspense>
+      </div>
     </div>
   )
 }

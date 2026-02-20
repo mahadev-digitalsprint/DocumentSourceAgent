@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { jobsApi } from '../../shared/api'
 import type { DirectRunResult, JobRunHistoryItem } from '../../shared/types'
@@ -231,7 +231,7 @@ export function JobsMonitorPage() {
     onError: (error: Error) => setSchedulerMessage(error.message),
   })
 
-  const refreshStatuses = async () => {
+  const refreshStatuses = useCallback(async () => {
     const pendingStatuses = new Set(['QUEUED', 'PENDING', 'STARTED', 'PROGRESS', 'RETRY', 'RETRYING'])
     const candidates = trackedJobs.filter((job) => pendingStatuses.has(job.status.toUpperCase()))
     if (candidates.length === 0) return
@@ -261,7 +261,13 @@ export function JobsMonitorPage() {
           }
           return null
         } catch {
-          return { runId: job.runId, status: 'UNKNOWN', jobId: job.jobId, result: null, updatedAt: new Date().toISOString() }
+          return {
+            runId: job.runId,
+            status: 'UNKNOWN',
+            jobId: job.jobId,
+            result: null,
+            updatedAt: new Date().toISOString(),
+          }
         }
       }),
     )
@@ -273,7 +279,7 @@ export function JobsMonitorPage() {
         return { ...job, status: latest.status, jobId: latest.jobId, result: latest.result, updatedAt: latest.updatedAt }
       }),
     )
-  }
+  }, [trackedJobs])
 
   useEffect(() => {
     if (!isPolling) return
@@ -281,7 +287,7 @@ export function JobsMonitorPage() {
       void refreshStatuses()
     }, 10_000)
     return () => window.clearInterval(timer)
-  })
+  }, [isPolling, refreshStatuses])
 
   const busy =
     runAllQueuedMutation.isPending ||

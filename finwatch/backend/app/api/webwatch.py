@@ -5,6 +5,7 @@ from typing import Optional
 
 from app.database import get_db
 from app.models import PageSnapshot, PageChange
+from app.utils.time import utc_now_naive
 
 router = APIRouter()
 
@@ -33,8 +34,9 @@ def list_page_changes(
     hours: int = 24,
     db: Session = Depends(get_db),
 ):
-    from datetime import datetime, timedelta
-    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    from datetime import timedelta
+
+    cutoff = utc_now_naive() - timedelta(hours=hours)
     q = db.query(PageChange).filter(PageChange.detected_at >= cutoff)
     if company_id:
         q = q.filter(PageChange.company_id == company_id)
