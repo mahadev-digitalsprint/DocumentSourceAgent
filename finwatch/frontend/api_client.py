@@ -1,31 +1,52 @@
-"""Streamlit shared API client."""
+"""
+FinWatch — Shared API client for Streamlit frontend.
+Connects to FastAPI backend on port 8080.
+"""
 import requests
-from typing import Any, Dict, Optional
+import streamlit as st
+from typing import Any, Optional
 
-API_BASE = "http://localhost:8000/api"
+API_BASE = "http://localhost:8080/api"
 
 
-def get(path: str, params: Optional[Dict] = None) -> Any:
+def api(method: str, path: str, json: Optional[dict] = None, params: Optional[dict] = None) -> Any:
+    """Universal API call — returns parsed JSON or None on error."""
+    url = f"{API_BASE}{path}"
     try:
-        r = requests.get(f"{API_BASE}{path}", params=params, timeout=15)
-        r.raise_for_status()
+        method = method.upper()
+        if method == "GET":
+            r = requests.get(url, params=params, timeout=15)
+        elif method == "POST":
+            r = requests.post(url, json=json, timeout=30)
+        elif method == "PATCH":
+            r = requests.patch(url, json=json, timeout=15)
+        elif method == "DELETE":
+            r = requests.delete(url, timeout=10)
+            return r.status_code < 300
+        else:
+            raise ValueError(f"Unsupported method: {method}")
+
+        if not r.ok:
+            st.error(f"API {method} {path} → {r.status_code}: {r.text[:200]}")
+            return None
+        if r.status_code == 204 or not r.content:
+            return True
         return r.json()
+
+    except requests.exceptions.ConnectionError:
+        st.error("❌ Cannot connect to FinWatch backend (port 8080). Is the server running?")
+        return None
     except Exception as e:
-        return {"error": str(e)}
+        st.error(f"API error: {e}")
+        return None
 
 
-def post(path: str, json: Optional[Dict] = None) -> Any:
-    try:
-        r = requests.post(f"{API_BASE}{path}", json=json, timeout=30)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        return {"error": str(e)}
+# ── Convenience wrappers (legacy) ─────────────────────────────────────────────
+def get(path: str, params: Optional[dict] = None) -> Any:
+    return api("GET", path, params=params)
 
+def post(path: str, json: Optional[dict] = None) -> Any:
+    return api("POST", path, json=json)
 
 def delete(path: str) -> Any:
-    try:
-        r = requests.delete(f"{API_BASE}{path}", timeout=10)
-        return r.status_code
-    except Exception as e:
-        return {"error": str(e)}
+    return api("DELETE", path)

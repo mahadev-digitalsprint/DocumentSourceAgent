@@ -2,14 +2,19 @@
 import os
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
+import json
 
 from app.database import get_db
-from app.models import DocumentRegistry, MetadataRecord, ChangeLog, ErrorLog
+from app.models import DocumentRegistry, MetadataRecord, ChangeLog, ErrorLog, Company
 
 router = APIRouter()
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Documents
+# ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/")
 def list_documents(
@@ -22,25 +27,78 @@ def list_documents(
     if company_id:
         q = q.filter(DocumentRegistry.company_id == company_id)
     if doc_type:
-        q = q.filter(DocumentRegistry.doc_type == doc_type)
+        q = q.filter(DocumentRegistry.doc_type.like(f"%{doc_type}%"))
     if status:
         q = q.filter(DocumentRegistry.status == status)
     docs = q.order_by(DocumentRegistry.created_at.desc()).all()
     return [
         {
-            "id": d.id, "url": d.document_url,
-            "doc_type": d.doc_type, "status": d.status,
+            "id": d.id,
+            "company_id": d.company_id,
+            "document_url": d.document_url,    # consistent naming — was "url"
+            "doc_type": d.doc_type,
+            "status": d.status,
+            "file_size_bytes": d.file_size_bytes,
             "file_size_kb": round(d.file_size_bytes / 1024, 1) if d.file_size_bytes else None,
-            "page_count": d.page_count, "is_scanned": d.is_scanned,
-            "language": d.language, "metadata_extracted": d.metadata_extracted,
-            "local_path": d.local_path, "last_checked": str(d.last_checked or ""),
+            "page_count": d.page_count,
+            "is_scanned": d.is_scanned,
+            "language": d.language,
+            "metadata_extracted": d.metadata_extracted,
+            "local_path": d.local_path,
+            "last_checked": str(d.last_checked or ""),
+            "created_at": str(d.created_at or ""),
         }
         for d in docs
     ]
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Metadata — list ALL metadata records (used by Metadata page)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/metadata/")
+def list_all_metadata(
+    company_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    """Return all metadata records joined with company name."""
+    q = (
+        db.query(MetadataRecord, DocumentRegistry, Company)
+        .join(DocumentRegistry, MetadataRecord.document_id == DocumentRegistry.id)
+        .join(Company, DocumentRegistry.company_id == Company.id)
+    )
+    if company_id:
+        q = q.filter(DocumentRegistry.company_id == company_id)
+
+    results = q.order_by(MetadataRecord.created_at.desc()).all()
+    return [
+        {
+            "id": m.id,
+            "document_id": m.document_id,
+            "company_name": c.company_name,
+            "company_id": c.id,
+            "document_url": d.document_url,
+            "document_category": (d.doc_type or "").split("|")[0],
+            "document_type": m.document_type or (d.doc_type or "").split("|")[-1],
+            "headline": m.headline,
+            "filing_date": m.filing_date,
+            "period_end_date": m.period_end_date,
+            "language": m.language,
+            "audit_flag": m.audit_flag,
+            "audit_status": "Audited" if m.audit_flag else "Unaudited",
+            "preliminary_document": m.preliminary_document,
+            "income_statement": m.income_statement,
+            "note_flag": m.note_flag,
+            "filing_data_source": m.filing_data_source,
+            "raw_llm_response": m.raw_llm_response if isinstance(m.raw_llm_response, dict) else {},
+            "created_at": str(m.created_at or ""),
+        }
+        for m, d, c in results
+    ]
+
+
 @router.get("/{doc_id}/metadata")
-def get_metadata(doc_id: int, db: Session = Depends(get_db)):
+def get_single_metadata(doc_id: int, db: Session = Depends(get_db)):
     m = db.query(MetadataRecord).filter(MetadataRecord.document_id == doc_id).first()
     if not m:
         raise HTTPException(404, "No metadata for this document")
@@ -51,26 +109,16 @@ def get_metadata(doc_id: int, db: Session = Depends(get_db)):
         "period_end_date": m.period_end_date, "document_type": m.document_type,
         "income_statement": m.income_statement, "preliminary_document": m.preliminary_document,
         "note_flag": m.note_flag, "audit_flag": m.audit_flag,
+        "raw_llm_response": m.raw_llm_response if isinstance(m.raw_llm_response, dict) else {},
     }
 
 
-@router.get("/{company_id}/excel")
-def download_excel(company_id: int, db: Session = Depends(get_db)):
-    from app.models import Company
-    from app.agents.excel_agent import _build_excel
-    from app.config import get_settings
-
-    company = db.query(Company).get(company_id)
-    if not company:
-        raise HTTPException(404, "Company not found")
-
-    settings = get_settings()
-    path = _build_excel(db, company, settings.base_download_path)
-    return FileResponse(path, filename=os.path.basename(path),
-                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
+# ─────────────────────────────────────────────────────────────────────────────
+# Document Changes
+# ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/changes/")
+@router.get("/changes/document")   # alias for frontend compatibility
 def get_change_logs(
     company_id: Optional[int] = None,
     hours: int = 24,
@@ -78,25 +126,35 @@ def get_change_logs(
 ):
     from datetime import datetime, timedelta
     cutoff = datetime.utcnow() - timedelta(hours=hours)
-    docs = db.query(DocumentRegistry)
-    if company_id:
-        docs = docs.filter(DocumentRegistry.company_id == company_id)
-    doc_ids = [d.id for d in docs.all()]
-    changes = (
-        db.query(ChangeLog)
-        .filter(ChangeLog.document_id.in_(doc_ids), ChangeLog.detected_at >= cutoff)
-        .order_by(ChangeLog.detected_at.desc())
-        .all()
+    q = (
+        db.query(ChangeLog, DocumentRegistry, Company)
+        .join(DocumentRegistry, ChangeLog.document_id == DocumentRegistry.id)
+        .join(Company, DocumentRegistry.company_id == Company.id)
+        .filter(ChangeLog.detected_at >= cutoff)
     )
+    if company_id:
+        q = q.filter(DocumentRegistry.company_id == company_id)
+    changes = q.order_by(ChangeLog.detected_at.desc()).all()
     return [
         {
-            "id": c.id, "document_id": c.document_id, "change_type": c.change_type,
-            "old_hash": c.old_hash, "new_hash": c.new_hash,
+            "id": c.id,
+            "document_id": c.document_id,
+            "company_name": co.company_name,
+            "company_id": co.id,
+            "doc_type": d.doc_type,
+            "document_url": d.document_url,
+            "change_type": c.change_type,
+            "old_hash": c.old_hash,
+            "new_hash": c.new_hash,
             "detected_at": str(c.detected_at),
         }
-        for c in changes
+        for c, d, co in changes
     ]
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Errors
+# ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/errors/")
 def get_error_logs(company_id: Optional[int] = None, db: Session = Depends(get_db)):
@@ -106,8 +164,30 @@ def get_error_logs(company_id: Optional[int] = None, db: Session = Depends(get_d
     return [
         {
             "id": e.id, "step": e.step, "error_type": e.error_type,
+            "company_id": e.company_id,
             "document_url": e.document_url, "error_message": e.error_message,
             "created_at": str(e.created_at),
         }
         for e in q.order_by(ErrorLog.created_at.desc()).limit(200).all()
     ]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Excel download
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/{company_id}/excel")
+def download_excel(company_id: int, db: Session = Depends(get_db)):
+    company = db.query(Company).get(company_id)
+    if not company:
+        raise HTTPException(404, "Company not found")
+    from app.agents.excel_agent import excel_agent
+    from app.workflow.state import PipelineState
+    state: PipelineState = {"company_id": company_id, "company_name": company.company_name,
+                             "website_url": company.website_url, "downloaded_docs": []}
+    result = excel_agent(state)
+    path = result.get("excel_path", "")
+    if not path or not os.path.exists(path):
+        raise HTTPException(500, "Excel generation failed")
+    return FileResponse(path, filename=os.path.basename(path),
+                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
