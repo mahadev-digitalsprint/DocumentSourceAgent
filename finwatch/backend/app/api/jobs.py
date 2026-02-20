@@ -13,7 +13,7 @@ from typing import Any, Callable, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal, get_db
@@ -27,6 +27,8 @@ from app.services.job_run_service import (
     mark_retrying,
     mark_running,
 )
+from app.services.run_guard import acquire_singleflight, ensure_no_overlap
+from app.services.scheduler_service import scheduler_status, scheduler_tick, update_scheduler_config
 from app.utils.time import utc_now_naive
 
 logger = logging.getLogger(__name__)
@@ -59,6 +61,15 @@ class JobRunOut(BaseModel):
     updated_at: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class SchedulerConfigIn(BaseModel):
+    enabled: Optional[bool] = None
+    poll_seconds: Optional[int] = Field(default=None, ge=5, le=300)
+    pipeline_interval_minutes: Optional[int] = Field(default=None, ge=15, le=24 * 60)
+    webwatch_interval_minutes: Optional[int] = Field(default=None, ge=5, le=24 * 60)
+    digest_hour_utc: Optional[int] = Field(default=None, ge=0, le=23)
+    digest_minute_utc: Optional[int] = Field(default=None, ge=0, le=59)
 
 
 def _get_base_folder(db: Session) -> str:
@@ -213,45 +224,100 @@ def run_pipeline(company_id: int, db: Session = Depends(get_db)):
         raise HTTPException(404, "Company not found")
     from app.tasks import run_pipeline as run_pipeline_task
 
-    return _queue_task(
-        db,
-        trigger_type="PIPELINE",
-        company=company,
-        enqueue=lambda run_id: run_pipeline_task.delay(company_id, run_id),
-    )
+    with acquire_singleflight("pipeline-launch"):
+        ensure_no_overlap(
+            db,
+            trigger_types=["PIPELINE_ALL"],
+            message="Global pipeline run already active. Wait until it completes.",
+        )
+        ensure_no_overlap(
+            db,
+            trigger_types=["PIPELINE"],
+            company_id=company_id,
+            message="Pipeline run for this company is already active.",
+        )
+        return _queue_task(
+            db,
+            trigger_type="PIPELINE",
+            company=company,
+            enqueue=lambda run_id: run_pipeline_task.delay(company_id, run_id),
+        )
 
 
 @router.post("/run-all", response_model=JobOut)
 def run_all(db: Session = Depends(get_db)):
     from app.tasks import run_all_companies
 
-    return _queue_task(
-        db,
-        trigger_type="PIPELINE_ALL",
-        enqueue=lambda run_id: run_all_companies.delay(run_id),
-    )
+    with acquire_singleflight("pipeline-all-launch"):
+        ensure_no_overlap(
+            db,
+            trigger_types=["PIPELINE", "PIPELINE_ALL"],
+            message="Pipeline run already active. Wait for current run to finish.",
+        )
+        return _queue_task(
+            db,
+            trigger_type="PIPELINE_ALL",
+            enqueue=lambda run_id: run_all_companies.delay(run_id),
+        )
 
 
 @router.post("/webwatch-now", response_model=JobOut)
 def trigger_webwatch(db: Session = Depends(get_db)):
     from app.tasks import run_hourly_webwatch
 
-    return _queue_task(
-        db,
-        trigger_type="WEBWATCH",
-        enqueue=lambda run_id: run_hourly_webwatch.delay(run_id),
-    )
+    with acquire_singleflight("webwatch-launch"):
+        ensure_no_overlap(
+            db,
+            trigger_types=["WEBWATCH"],
+            message="WebWatch run already active. Wait for current run to finish.",
+        )
+        return _queue_task(
+            db,
+            trigger_type="WEBWATCH",
+            enqueue=lambda run_id: run_hourly_webwatch.delay(run_id),
+        )
 
 
 @router.post("/digest-now", response_model=JobOut)
 def trigger_digest(db: Session = Depends(get_db)):
     from app.tasks import run_daily_digest
 
+    with acquire_singleflight("digest-launch"):
+        ensure_no_overlap(
+            db,
+            trigger_types=["DIGEST"],
+            message="Digest run already active. Wait for current run to finish.",
+        )
     return _queue_task(
         db,
         trigger_type="DIGEST",
         enqueue=lambda run_id: run_daily_digest.delay(run_id),
     )
+
+
+@router.get("/scheduler/status")
+def get_scheduler_status():
+    return scheduler_status()
+
+
+@router.patch("/scheduler/config")
+def patch_scheduler_config(body: SchedulerConfigIn):
+    payload = body.model_dump(exclude_none=True)
+    return update_scheduler_config(payload)
+
+
+@router.post("/scheduler/tick")
+def run_scheduler_tick_now():
+    try:
+        with acquire_singleflight("scheduler-tick"):
+            return scheduler_tick()
+    except HTTPException as exc:
+        if exc.status_code != 409:
+            raise
+        status = scheduler_status()
+        status["busy"] = True
+        status["triggers"] = []
+        return status
 
 
 @router.get("/status/{job_id}", response_model=JobOut)
@@ -394,111 +460,135 @@ def run_pipeline_direct(company_id: int, db: Session = Depends(get_db)):
     if not company:
         raise HTTPException(404, "Company not found")
 
-    run = create_job_run(
-        db,
-        trigger_type="PIPELINE",
-        mode="DIRECT",
-        status="RUNNING",
-        company_id=company.id,
-        company_name=company.company_name,
-    )
+    with acquire_singleflight("pipeline-launch"):
+        ensure_no_overlap(
+            db,
+            trigger_types=["PIPELINE_ALL"],
+            message="Global pipeline run already active. Wait until it completes.",
+        )
+        ensure_no_overlap(
+            db,
+            trigger_types=["PIPELINE"],
+            company_id=company_id,
+            message="Pipeline run for this company is already active.",
+        )
+        run = create_job_run(
+            db,
+            trigger_type="PIPELINE",
+            mode="DIRECT",
+            status="RUNNING",
+            company_id=company.id,
+            company_name=company.company_name,
+        )
 
-    try:
-        result = _run_company_sync(company, db)
-        mark_done(db, run.run_id, result)
-        return JobOut(job_id=uuid.uuid4().hex, status="DONE", run_id=run.run_id, result=result)
-    except Exception as exc:
-        mark_failed(db, run.run_id, str(exc))
-        logger.exception("[DIRECT] Pipeline error for %s", company.company_name)
-        raise HTTPException(500, str(exc)) from exc
+        try:
+            result = _run_company_sync(company, db)
+            mark_done(db, run.run_id, result)
+            return JobOut(job_id=uuid.uuid4().hex, status="DONE", run_id=run.run_id, result=result)
+        except Exception as exc:
+            mark_failed(db, run.run_id, str(exc))
+            logger.exception("[DIRECT] Pipeline error for %s", company.company_name)
+            raise HTTPException(500, str(exc)) from exc
 
 
 @router.post("/run-all-direct", response_model=JobOut)
 def run_all_direct(db: Session = Depends(get_db)):
-    run = create_job_run(
-        db,
-        trigger_type="PIPELINE_ALL",
-        mode="DIRECT",
-        status="RUNNING",
-        company_name="ALL_ACTIVE_COMPANIES",
-    )
+    with acquire_singleflight("pipeline-all-launch"):
+        ensure_no_overlap(
+            db,
+            trigger_types=["PIPELINE", "PIPELINE_ALL"],
+            message="Pipeline run already active. Wait for current run to finish.",
+        )
+        run = create_job_run(
+            db,
+            trigger_type="PIPELINE_ALL",
+            mode="DIRECT",
+            status="RUNNING",
+            company_name="ALL_ACTIVE_COMPANIES",
+        )
 
-    companies = db.query(Company).filter(Company.active == True).all()
-    if not companies:
-        payload = {"message": "No active companies found", "total_companies": 0, "succeeded": 0, "failed": 0}
+        companies = db.query(Company).filter(Company.active == True).all()
+        if not companies:
+            payload = {"message": "No active companies found", "total_companies": 0, "succeeded": 0, "failed": 0}
+            mark_done(db, run.run_id, payload)
+            return JobOut(job_id=uuid.uuid4().hex, status="DONE", run_id=run.run_id, result=payload)
+
+        results = []
+        errors = []
+        for company in companies:
+            try:
+                results.append(_run_company_sync(company, db))
+            except Exception as exc:
+                logger.exception("[DIRECT-ALL] Failed for %s", company.company_name)
+                errors.append({"company": company.company_name, "error": str(exc)})
+
+        payload = {
+            "total_companies": len(companies),
+            "succeeded": len(results),
+            "failed": len(errors),
+            "companies": results,
+            "errors": errors,
+        }
         mark_done(db, run.run_id, payload)
         return JobOut(job_id=uuid.uuid4().hex, status="DONE", run_id=run.run_id, result=payload)
-
-    results = []
-    errors = []
-    for company in companies:
-        try:
-            results.append(_run_company_sync(company, db))
-        except Exception as exc:
-            logger.exception("[DIRECT-ALL] Failed for %s", company.company_name)
-            errors.append({"company": company.company_name, "error": str(exc)})
-
-    payload = {
-        "total_companies": len(companies),
-        "succeeded": len(results),
-        "failed": len(errors),
-        "companies": results,
-        "errors": errors,
-    }
-    mark_done(db, run.run_id, payload)
-    return JobOut(job_id=uuid.uuid4().hex, status="DONE", run_id=run.run_id, result=payload)
 
 
 @router.post("/webwatch-direct", response_model=JobOut)
 def webwatch_direct(db: Session = Depends(get_db)):
     from app.agents.webwatch_agent import webwatch_agent
 
-    run = create_job_run(
-        db,
-        trigger_type="WEBWATCH",
-        mode="DIRECT",
-        status="RUNNING",
-        company_name="ALL_ACTIVE_COMPANIES",
-    )
-    companies = db.query(Company).filter(Company.active == True).all()
-    base_folder = _get_base_folder(db)
-    results = []
-    errors = []
-    total_page_changes = 0
+    with acquire_singleflight("webwatch-launch"):
+        ensure_no_overlap(
+            db,
+            trigger_types=["WEBWATCH"],
+            message="WebWatch run already active. Wait for current run to finish.",
+        )
+        run = create_job_run(
+            db,
+            trigger_type="WEBWATCH",
+            mode="DIRECT",
+            status="RUNNING",
+            company_name="ALL_ACTIVE_COMPANIES",
+        )
+        companies = db.query(Company).filter(Company.active == True).all()
+        base_folder = _get_base_folder(db)
+        results = []
+        errors = []
+        total_page_changes = 0
 
-    for company in companies:
-        state = {
-            "company_id": company.id,
-            "company_name": company.company_name,
-            "company_slug": company.company_slug,
-            "website_url": company.website_url,
-            "base_folder": base_folder,
-            "crawl_depth": company.crawl_depth or 3,
-            "pdf_urls": [],
-            "page_changes": [],
-            "has_changes": False,
-            "downloaded_docs": [],
-            "errors": [],
-            "excel_path": None,
-            "email_sent": False,
-            "crawl_errors": [],
+        for company in companies:
+            state = {
+                "company_id": company.id,
+                "company_name": company.company_name,
+                "company_slug": company.company_slug,
+                "website_url": company.website_url,
+                "base_folder": base_folder,
+                "crawl_depth": company.crawl_depth or 3,
+                "pdf_urls": [],
+                "page_changes": [],
+                "has_changes": False,
+                "downloaded_docs": [],
+                "errors": [],
+                "excel_path": None,
+                "email_sent": False,
+                "crawl_errors": [],
+            }
+            try:
+                result = webwatch_agent(state)
+                change_count = len(result.get("page_changes", []))
+                total_page_changes += change_count
+                results.append({"company": company.company_name, "page_changes": change_count})
+            except Exception as exc:
+                errors.append({"company": company.company_name, "error": str(exc)})
+
+        payload = {
+            "total_companies": len(companies),
+            "total_page_changes": total_page_changes,
+            "companies": results,
+            "errors": errors,
         }
-        try:
-            result = webwatch_agent(state)
-            change_count = len(result.get("page_changes", []))
-            total_page_changes += change_count
-            results.append({"company": company.company_name, "page_changes": change_count})
-        except Exception as exc:
-            errors.append({"company": company.company_name, "error": str(exc)})
-
-    payload = {
-        "total_companies": len(companies),
-        "total_page_changes": total_page_changes,
-        "companies": results,
-        "errors": errors,
-    }
-    mark_done(db, run.run_id, payload)
-    return JobOut(job_id=uuid.uuid4().hex, status="DONE", run_id=run.run_id, result=payload)
+        mark_done(db, run.run_id, payload)
+        return JobOut(job_id=uuid.uuid4().hex, status="DONE", run_id=run.run_id, result=payload)
 
 
 @router.post("/generate-excel")

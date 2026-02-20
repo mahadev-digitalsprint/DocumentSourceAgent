@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     max_crawl_pages: int = 200
     crawl_domain_delay_seconds: float = 0.4
     crawl_block_cooldown_seconds: int = 300
+    download_max_bytes: int = 262144000
 
     # Database
     # database_url is preferred for local-first deployments.
@@ -53,6 +54,12 @@ class Settings(BaseSettings):
     webwatch_crawl_depth: int = 3
     auto_migrate_on_startup: bool = True
     migration_strict: bool = False
+    scheduler_enabled: bool = True
+    scheduler_poll_seconds: int = 15
+    scheduler_pipeline_interval_minutes: int = 120
+    scheduler_webwatch_interval_minutes: int = 60
+    scheduler_digest_hour_utc: int = 0
+    scheduler_digest_minute_utc: int = 30
 
     class Config:
         env_file = ".env"

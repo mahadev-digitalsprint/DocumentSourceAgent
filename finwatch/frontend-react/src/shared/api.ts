@@ -23,6 +23,7 @@ import type {
   PageChange,
   PageSnapshot,
   QueuedJobResponse,
+  SchedulerStatus,
   WebwatchDirectResult,
 } from './types'
 
@@ -83,10 +84,34 @@ export const jobsApi = {
   status: (jobId: string) => request<JobStatusResponse>(`/jobs/status/${jobId}`),
   statusByRunId: (runId: string) => request<JobRunHistoryItem>(`/jobs/status/run/${runId}`),
   history: (limit = 100) => request<JobRunHistoryItem[]>(`/jobs/history?limit=${limit}`),
+  schedulerStatus: () => request<SchedulerStatus>('/jobs/scheduler/status'),
+  schedulerTick: () => request<{ enabled: boolean; triggers: Array<{ trigger_type: string; run_id: string }>; error?: string }>('/jobs/scheduler/tick', { method: 'POST' }),
+  schedulerConfig: (payload: Partial<{
+    enabled: boolean
+    poll_seconds: number
+    pipeline_interval_minutes: number
+    webwatch_interval_minutes: number
+    digest_hour_utc: number
+    digest_minute_utc: number
+  }>) =>
+    request<SchedulerStatus>('/jobs/scheduler/config', {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
 }
 
 export const documentsApi = {
   list: () => request<DocumentRecord[]>('/documents/'),
+  reviewQueue: (companyId?: number, limit = 100) => {
+    const params = new URLSearchParams({ limit: String(limit) })
+    if (companyId) params.set('company_id', String(companyId))
+    return request<DocumentRecord[]>(`/documents/review/queue?${params.toString()}`)
+  },
+  setNeedsReview: (docId: number, needsReview: boolean) =>
+    request<{ id: number; needs_review: boolean; classifier_confidence?: number | null }>(`/documents/review/${docId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ needs_review: needsReview }),
+    }),
   metadataList: (companyId?: number) => {
     const params = new URLSearchParams()
     if (companyId) params.set('company_id', String(companyId))

@@ -2,7 +2,9 @@ import unittest
 
 from fastapi.testclient import TestClient
 
+from app.database import SessionLocal
 from app.main import app
+from app.models import JobRun
 
 
 class JobsRealtimeApiTests(unittest.TestCase):
@@ -16,6 +18,16 @@ class JobsRealtimeApiTests(unittest.TestCase):
         cls._client_ctx.__exit__(None, None, None)
 
     def test_run_all_direct_returns_run_id(self):
+        db = SessionLocal()
+        try:
+            db.query(JobRun).filter(
+                JobRun.trigger_type.in_(["PIPELINE", "PIPELINE_ALL"]),
+                JobRun.status.in_(["QUEUED", "RUNNING", "RETRY", "RETRYING", "PENDING", "STARTED", "PROGRESS"]),
+            ).delete(synchronize_session=False)
+            db.commit()
+        finally:
+            db.close()
+
         response = self.client.post("/api/jobs/run-all-direct")
         self.assertEqual(response.status_code, 200)
         payload = response.json()

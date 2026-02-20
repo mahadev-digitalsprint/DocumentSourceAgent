@@ -66,11 +66,23 @@ export function JobsMonitorPage() {
   const [directRuns, setDirectRuns] = useState<DirectRunEntry[]>([])
   const [lastError, setLastError] = useState('')
   const [isPolling, setIsPolling] = useState(true)
+  const [schedulerEnabled, setSchedulerEnabled] = useState(true)
+  const [schedulerPollSeconds, setSchedulerPollSeconds] = useState(15)
+  const [pipelineIntervalMinutes, setPipelineIntervalMinutes] = useState(120)
+  const [webwatchIntervalMinutes, setWebwatchIntervalMinutes] = useState(60)
+  const [digestHourUtc, setDigestHourUtc] = useState(0)
+  const [digestMinuteUtc, setDigestMinuteUtc] = useState(30)
+  const [schedulerMessage, setSchedulerMessage] = useState('')
 
   const historyQuery = useQuery({
     queryKey: ['jobHistory', 100],
     queryFn: () => jobsApi.history(100),
     refetchInterval: 60_000,
+  })
+  const schedulerQuery = useQuery({
+    queryKey: ['schedulerStatus'],
+    queryFn: jobsApi.schedulerStatus,
+    refetchInterval: 20_000,
   })
 
   useEffect(() => {
@@ -86,6 +98,16 @@ export function JobsMonitorPage() {
         .slice(0, 100)
     })
   }, [historyQuery.data])
+
+  useEffect(() => {
+    if (!schedulerQuery.data) return
+    setSchedulerEnabled(Boolean(schedulerQuery.data.enabled))
+    setSchedulerPollSeconds(Number(schedulerQuery.data.poll_seconds || 15))
+    setPipelineIntervalMinutes(Number(schedulerQuery.data.pipeline_interval_minutes || 120))
+    setWebwatchIntervalMinutes(Number(schedulerQuery.data.webwatch_interval_minutes || 60))
+    setDigestHourUtc(Number(schedulerQuery.data.digest_hour_utc || 0))
+    setDigestMinuteUtc(Number(schedulerQuery.data.digest_minute_utc || 30))
+  }, [schedulerQuery.data])
 
   useEffect(() => {
     const base = import.meta.env.VITE_API_BASE ?? '/api'
@@ -176,6 +198,37 @@ export function JobsMonitorPage() {
       void queryClient.invalidateQueries({ queryKey: ['jobHistory'] })
     },
     onError: (error: Error) => setLastError(error.message),
+  })
+
+  const saveSchedulerMutation = useMutation({
+    mutationFn: () =>
+      jobsApi.schedulerConfig({
+        enabled: schedulerEnabled,
+        poll_seconds: schedulerPollSeconds,
+        pipeline_interval_minutes: pipelineIntervalMinutes,
+        webwatch_interval_minutes: webwatchIntervalMinutes,
+        digest_hour_utc: digestHourUtc,
+        digest_minute_utc: digestMinuteUtc,
+      }),
+    onSuccess: () => {
+      setSchedulerMessage('Scheduler settings saved.')
+      void queryClient.invalidateQueries({ queryKey: ['schedulerStatus'] })
+    },
+    onError: (error: Error) => setSchedulerMessage(error.message),
+  })
+
+  const tickSchedulerMutation = useMutation({
+    mutationFn: jobsApi.schedulerTick,
+    onSuccess: (data) => {
+      const triggerCount = data.triggers?.length ?? 0
+      setSchedulerMessage(`Scheduler tick completed. Triggered ${triggerCount} job(s).`)
+      for (const trigger of data.triggers ?? []) {
+        addTrackedJob(trigger.run_id, undefined, trigger.trigger_type, 'QUEUED')
+      }
+      void queryClient.invalidateQueries({ queryKey: ['jobHistory'] })
+      void queryClient.invalidateQueries({ queryKey: ['schedulerStatus'] })
+    },
+    onError: (error: Error) => setSchedulerMessage(error.message),
   })
 
   const refreshStatuses = async () => {
@@ -322,6 +375,103 @@ export function JobsMonitorPage() {
             </button>
             <span className="text-xs text-slate-400">Polling interval: 10s</span>
           </div>
+        </SectionCard>
+      </section>
+
+      <section className="mt-6">
+        <SectionCard
+          title="Scheduler Control Plane"
+          subtitle="DB-backed schedule controls with single-flight launch protection"
+          action={
+            <div className="flex gap-2">
+              <button
+                onClick={() => tickSchedulerMutation.mutate()}
+                disabled={tickSchedulerMutation.isPending}
+                className="rounded-md bg-slate-700 px-3 py-1 text-xs font-semibold text-slate-100 hover:bg-slate-600 disabled:cursor-not-allowed"
+              >
+                Tick Now
+              </button>
+              <button
+                onClick={() => saveSchedulerMutation.mutate()}
+                disabled={saveSchedulerMutation.isPending}
+                className="rounded-md bg-accent px-3 py-1 text-xs font-semibold text-slate-950 hover:bg-emerald-300 disabled:cursor-not-allowed"
+              >
+                Save
+              </button>
+            </div>
+          }
+        >
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
+            <label className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-900/50 px-3 py-2 text-sm text-slate-100">
+              <input type="checkbox" checked={schedulerEnabled} onChange={(event) => setSchedulerEnabled(event.target.checked)} />
+              Scheduler Enabled
+            </label>
+            <label className="rounded-lg border border-slate-700 bg-slate-900/50 px-3 py-2 text-sm text-slate-100">
+              Poll (s)
+              <input
+                type="number"
+                min={5}
+                max={300}
+                value={schedulerPollSeconds}
+                onChange={(event) => setSchedulerPollSeconds(Number(event.target.value))}
+                className="mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm"
+              />
+            </label>
+            <label className="rounded-lg border border-slate-700 bg-slate-900/50 px-3 py-2 text-sm text-slate-100">
+              Pipeline Interval (min)
+              <input
+                type="number"
+                min={15}
+                max={1440}
+                value={pipelineIntervalMinutes}
+                onChange={(event) => setPipelineIntervalMinutes(Number(event.target.value))}
+                className="mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm"
+              />
+            </label>
+            <label className="rounded-lg border border-slate-700 bg-slate-900/50 px-3 py-2 text-sm text-slate-100">
+              WebWatch Interval (min)
+              <input
+                type="number"
+                min={5}
+                max={1440}
+                value={webwatchIntervalMinutes}
+                onChange={(event) => setWebwatchIntervalMinutes(Number(event.target.value))}
+                className="mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm"
+              />
+            </label>
+            <label className="rounded-lg border border-slate-700 bg-slate-900/50 px-3 py-2 text-sm text-slate-100">
+              Digest Hour (UTC)
+              <input
+                type="number"
+                min={0}
+                max={23}
+                value={digestHourUtc}
+                onChange={(event) => setDigestHourUtc(Number(event.target.value))}
+                className="mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm"
+              />
+            </label>
+            <label className="rounded-lg border border-slate-700 bg-slate-900/50 px-3 py-2 text-sm text-slate-100">
+              Digest Minute (UTC)
+              <input
+                type="number"
+                min={0}
+                max={59}
+                value={digestMinuteUtc}
+                onChange={(event) => setDigestMinuteUtc(Number(event.target.value))}
+                className="mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm"
+              />
+            </label>
+          </div>
+          <div className="mt-3 grid gap-2 text-xs text-slate-400 md:grid-cols-2 xl:grid-cols-4">
+            <p>Last Tick: {schedulerQuery.data?.last_tick_at || '-'}</p>
+            <p>Last Pipeline: {schedulerQuery.data?.last_pipeline_run_at || '-'}</p>
+            <p>Last WebWatch: {schedulerQuery.data?.last_webwatch_run_at || '-'}</p>
+            <p>Last Digest: {schedulerQuery.data?.last_digest_run_at || '-'}</p>
+          </div>
+          {schedulerQuery.data?.last_error ? (
+            <p className="mt-3 rounded-md border border-red-500/40 bg-red-950/30 p-2 text-xs text-red-200">{schedulerQuery.data.last_error}</p>
+          ) : null}
+          {schedulerMessage ? <p className="mt-3 rounded-md border border-emerald-500/40 bg-emerald-950/30 p-2 text-xs text-emerald-200">{schedulerMessage}</p> : null}
         </SectionCard>
       </section>
 

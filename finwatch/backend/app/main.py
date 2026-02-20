@@ -14,6 +14,7 @@ from app.config import get_settings
 from app.database import SessionLocal, engine
 from app.migration import ensure_schema_at_head
 from app.schema_compat import ensure_runtime_schema_compatibility
+from app.services.scheduler_service import scheduler_loop
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -46,15 +47,21 @@ app.include_router(analytics.router, prefix="/api/analytics", tags=["Analytics"]
 def startup_db_migrations():
     if not settings.auto_migrate_on_startup:
         ensure_runtime_schema_compatibility()
-        return
-    try:
-        ensure_schema_at_head()
-    except Exception as exc:
-        if settings.migration_strict:
-            raise
-        logger.warning("[MIGRATION] Failed to run Alembic upgrade (%s). Falling back to create_all.", exc)
-        models.Base.metadata.create_all(bind=engine)
-    ensure_runtime_schema_compatibility()
+    else:
+        try:
+            ensure_schema_at_head()
+        except Exception as exc:
+            if settings.migration_strict:
+                raise
+            logger.warning("[MIGRATION] Failed to run Alembic upgrade (%s). Falling back to create_all.", exc)
+            models.Base.metadata.create_all(bind=engine)
+        ensure_runtime_schema_compatibility()
+    scheduler_loop.start()
+
+
+@app.on_event("shutdown")
+def shutdown_scheduler_loop():
+    scheduler_loop.stop()
 
 
 @app.get("/health")

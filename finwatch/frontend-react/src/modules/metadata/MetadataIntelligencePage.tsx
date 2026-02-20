@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { companyApi, documentsApi } from '../../shared/api'
 import type { MetadataListItem } from '../../shared/types'
 import { SectionCard } from '../dashboard/SectionCard'
@@ -56,6 +56,7 @@ function triggerCsvDownload(filename: string, csvData: string) {
 }
 
 export function MetadataIntelligencePage() {
+  const queryClient = useQueryClient()
   const [search, setSearch] = useState('')
   const [companyId, setCompanyId] = useState<number | 'ALL'>('ALL')
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>('ALL')
@@ -72,9 +73,22 @@ export function MetadataIntelligencePage() {
     queryKey: ['metadataList'],
     queryFn: () => documentsApi.metadataList(),
   })
+  const reviewQueueQuery = useQuery({
+    queryKey: ['reviewQueue', companyId],
+    queryFn: () => documentsApi.reviewQueue(companyId === 'ALL' ? undefined : companyId, 100),
+    refetchInterval: 20_000,
+  })
+  const reviewMutation = useMutation({
+    mutationFn: ({ docId, needsReview }: { docId: number; needsReview: boolean }) => documentsApi.setNeedsReview(docId, needsReview),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['reviewQueue'] })
+      void queryClient.invalidateQueries({ queryKey: ['documents'] })
+    },
+  })
 
   const companies = companiesQuery.data ?? []
   const metadata = metadataQuery.data ?? []
+  const reviewQueue = reviewQueueQuery.data ?? []
 
   const metrics = useMemo(() => {
     const total = metadata.length
@@ -257,7 +271,7 @@ export function MetadataIntelligencePage() {
           </SectionCard>
         </div>
 
-        <div>
+        <div className="space-y-4">
           <SectionCard title="Record Detail" subtitle="Selected metadata payload">
             {!selectedItem ? (
               <p className="text-sm text-slate-500">Select a metadata row to inspect details.</p>
@@ -297,6 +311,31 @@ export function MetadataIntelligencePage() {
                 </div>
               </div>
             )}
+          </SectionCard>
+          <SectionCard title="Classifier Review Queue" subtitle="Low-confidence documents awaiting analyst decision">
+            <div className="space-y-2 text-sm">
+              {reviewQueueQuery.isLoading ? <p className="text-slate-500">Loading review queue...</p> : null}
+              {reviewQueue.slice(0, 25).map((doc) => (
+                <div key={doc.id} className="rounded-lg border border-slate-700 bg-slate-900/60 p-3">
+                  <p className="truncate font-semibold text-slate-100">{doc.doc_type || 'UNKNOWN'}</p>
+                  <p className="truncate text-xs text-cyan-300">{doc.document_url}</p>
+                  <p className="text-xs text-slate-400">Confidence: {((doc.classifier_confidence ?? 0) * 100).toFixed(1)}%</p>
+                  <div className="mt-2 flex gap-2">
+                    <button
+                      onClick={() => reviewMutation.mutate({ docId: doc.id, needsReview: false })}
+                      disabled={reviewMutation.isPending}
+                      className="rounded-md bg-accent px-2 py-1 text-xs font-semibold text-slate-950 hover:bg-emerald-300 disabled:cursor-not-allowed"
+                    >
+                      Mark Reviewed
+                    </button>
+                    <a href={doc.document_url} target="_blank" rel="noreferrer" className="rounded-md bg-slate-700 px-2 py-1 text-xs font-semibold text-slate-100 hover:bg-slate-600">
+                      Open
+                    </a>
+                  </div>
+                </div>
+              ))}
+              {!reviewQueueQuery.isLoading && reviewQueue.length === 0 ? <p className="text-slate-500">No documents currently need review.</p> : null}
+            </div>
           </SectionCard>
         </div>
       </section>

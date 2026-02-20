@@ -231,6 +231,20 @@ export type AnalyticsDocChangeType = Array<{
   count: number
 }>
 
+export type SchedulerStatus = {
+  enabled: boolean
+  poll_seconds: number
+  pipeline_interval_minutes: number
+  webwatch_interval_minutes: number
+  digest_hour_utc: number
+  digest_minute_utc: number
+  last_tick_at?: string | null
+  last_pipeline_run_at?: string | null
+  last_webwatch_run_at?: string | null
+  last_digest_run_at?: string | null
+  last_error?: string | null
+}
+
 export type CrawlDiagnosticRecord = {
   id: number
   company_id?: number | null
