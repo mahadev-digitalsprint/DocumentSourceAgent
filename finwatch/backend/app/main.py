@@ -1,6 +1,8 @@
 """FastAPI main application."""
 from __future__ import annotations
 
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
@@ -8,14 +10,18 @@ from sqlalchemy import text
 
 from app import models
 from app.api import alerts, analytics, companies, documents, jobs, settings as settings_router, webwatch
+from app.config import get_settings
 from app.database import SessionLocal, engine
+from app.migration import ensure_schema_at_head
+from app.schema_compat import ensure_runtime_schema_compatibility
 
-models.Base.metadata.create_all(bind=engine)
+logger = logging.getLogger(__name__)
+settings = get_settings()
 
 app = FastAPI(
     title="FinWatch API",
     description="Financial Document Intelligence and Website Monitoring",
-    version="2.1.0",
+    version="2.2.0",
 )
 
 app.add_middleware(
@@ -35,9 +41,24 @@ app.include_router(settings_router.router, prefix="/api/settings", tags=["Settin
 app.include_router(analytics.router, prefix="/api/analytics", tags=["Analytics"])
 
 
+@app.on_event("startup")
+def startup_db_migrations():
+    if not settings.auto_migrate_on_startup:
+        ensure_runtime_schema_compatibility()
+        return
+    try:
+        ensure_schema_at_head()
+    except Exception as exc:
+        if settings.migration_strict:
+            raise
+        logger.warning("[MIGRATION] Failed to run Alembic upgrade (%s). Falling back to create_all.", exc)
+        models.Base.metadata.create_all(bind=engine)
+    ensure_runtime_schema_compatibility()
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "FinWatch API", "version": "2.1.0"}
+    return {"status": "ok", "service": "FinWatch API", "version": "2.2.0"}
 
 
 @app.get("/ready")

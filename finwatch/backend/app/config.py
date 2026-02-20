@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     # App
     base_download_path: str = "./downloads"
     webwatch_crawl_depth: int = 3
+    auto_migrate_on_startup: bool = True
+    migration_strict: bool = False
 
     class Config:
         env_file = ".env"

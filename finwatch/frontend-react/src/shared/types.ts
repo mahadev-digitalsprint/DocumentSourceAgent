@@ -144,6 +144,9 @@ export type JobRunHistoryItem = {
   company_name?: string | null
   result_payload?: Record<string, unknown> | null
   error_message?: string | null
+  duration_ms?: number | null
+  items_processed?: number | null
+  error_count?: number | null
   created_at?: string | null
   started_at?: string | null
   finished_at?: string | null

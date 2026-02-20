@@ -8,7 +8,12 @@ from app.main import app
 class JobsRealtimeApiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.client = TestClient(app)
+        cls._client_ctx = TestClient(app)
+        cls.client = cls._client_ctx.__enter__()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._client_ctx.__exit__(None, None, None)
 
     def test_run_all_direct_returns_run_id(self):
         response = self.client.post("/api/jobs/run-all-direct")

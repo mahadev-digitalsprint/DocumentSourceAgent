@@ -208,6 +208,9 @@ class JobRun(Base):
 
     result_payload = Column(JSON, nullable=True)
     error_message = Column(Text, nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+    items_processed = Column(Integer, nullable=True)
+    error_count = Column(Integer, nullable=True)
 
     created_at = Column(DateTime, server_default=func.now())
     started_at = Column(DateTime, nullable=True)

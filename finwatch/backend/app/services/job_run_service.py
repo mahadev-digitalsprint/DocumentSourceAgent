@@ -10,6 +10,29 @@ from app.models import JobRun
 from app.utils.time import utc_now_naive
 
 
+def _derive_items_processed(payload) -> int | None:
+    if not isinstance(payload, dict):
+        return None
+    if isinstance(payload.get("total_companies"), int):
+        return int(payload["total_companies"])
+    if isinstance(payload.get("companies"), list):
+        return len(payload["companies"])
+    if isinstance(payload.get("job_ids"), list):
+        return len(payload["job_ids"])
+    return None
+
+
+def _derive_error_count(payload) -> int | None:
+    if not isinstance(payload, dict):
+        return None
+    errors = payload.get("errors")
+    if isinstance(errors, list):
+        return len(errors)
+    if isinstance(payload.get("failed"), int):
+        return int(payload["failed"])
+    return None
+
+
 def create_job_run(
     db: Session,
     *,
@@ -62,6 +85,10 @@ def mark_done(db: Session, run_id: str, result_payload=None):
     run.status = "DONE"
     run.result_payload = result_payload or {}
     run.finished_at = utc_now_naive()
+    if run.started_at and run.finished_at:
+        run.duration_ms = int((run.finished_at - run.started_at).total_seconds() * 1000)
+    run.items_processed = _derive_items_processed(run.result_payload)
+    run.error_count = _derive_error_count(run.result_payload)
     db.commit()
 
 
@@ -72,6 +99,9 @@ def mark_failed(db: Session, run_id: str, error_message: str):
     run.status = "FAILED"
     run.error_message = error_message[:4000]
     run.finished_at = utc_now_naive()
+    if run.started_at and run.finished_at:
+        run.duration_ms = int((run.finished_at - run.started_at).total_seconds() * 1000)
+    run.error_count = 1
     db.commit()
 
 

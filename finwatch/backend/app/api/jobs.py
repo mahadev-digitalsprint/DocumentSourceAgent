@@ -50,6 +50,9 @@ class JobRunOut(BaseModel):
     company_name: Optional[str] = None
     result_payload: Optional[dict] = None
     error_message: Optional[str] = None
+    duration_ms: Optional[int] = None
+    items_processed: Optional[int] = None
+    error_count: Optional[int] = None
     created_at: Optional[str] = None
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
@@ -85,6 +88,9 @@ def _to_run_out(run: JobRun) -> JobRunOut:
         company_name=run.company_name,
         result_payload=run.result_payload or None,
         error_message=run.error_message,
+        duration_ms=run.duration_ms,
+        items_processed=run.items_processed,
+        error_count=run.error_count,
         created_at=_to_iso(run.created_at),
         started_at=_to_iso(run.started_at),
         finished_at=_to_iso(run.finished_at),
@@ -102,6 +108,9 @@ def _to_run_event_payload(run: JobRun) -> dict:
         "company_id": run.company_id,
         "company_name": run.company_name,
         "error_message": run.error_message,
+        "duration_ms": run.duration_ms,
+        "items_processed": run.items_processed,
+        "error_count": run.error_count,
         "created_at": _to_iso(run.created_at),
         "started_at": _to_iso(run.started_at),
         "finished_at": _to_iso(run.finished_at),
