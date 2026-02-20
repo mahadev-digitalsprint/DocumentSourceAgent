@@ -36,7 +36,7 @@ audit_filt = f2.selectbox("Audit Status", ["All", "Audited", "Unaudited"])
 src_filt  = f3.text_input("Search headline / type")
 
 # ── Fetch full metadata from API ───────────────────────────────────────────────
-all_meta = api("GET", "/metadata/") or []
+all_meta = api("GET", "/documents/metadata/") or []
 
 tab_fin, tab_nonfin = st.tabs([
     f"💰 Financial Metadata ({len(fin_docs)})",

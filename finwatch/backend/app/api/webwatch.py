@@ -55,7 +55,7 @@ def list_page_changes(
 @router.get("/changes/{change_id}/diff")
 def get_diff(change_id: int, db: Session = Depends(get_db)):
     """Return old_text and new_text for a specific page change."""
-    c = db.query(PageChange).get(change_id)
+    c = db.get(PageChange, change_id)
     if not c:
         from fastapi import HTTPException
         raise HTTPException(404, "Change not found")

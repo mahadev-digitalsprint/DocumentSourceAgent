@@ -34,7 +34,7 @@ def parse_agent(state: PipelineState) -> dict:
         for doc_info in state.get("downloaded_docs", []):
             if doc_info.get("status") == "UNCHANGED" or not doc_info.get("local_path"):
                 continue
-            doc: Optional[DocumentRegistry] = db.query(DocumentRegistry).get(doc_info.get("doc_id"))
+            doc: Optional[DocumentRegistry] = db.get(DocumentRegistry, doc_info.get("doc_id"))
             if not doc or not doc.local_path:
                 continue
 

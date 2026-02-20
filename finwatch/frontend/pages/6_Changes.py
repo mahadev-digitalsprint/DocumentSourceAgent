@@ -142,6 +142,8 @@ with tab_pages:
 st.divider()
 if st.button("🔍 Run WebWatch Now", help="Trigger an immediate page scan for all companies"):
     r = api("POST", "/jobs/webwatch-now")
+    if not r:
+        r = api("POST", "/jobs/webwatch-direct")
     if r:
         st.success(f"✅ WebWatch triggered! Job: `{r.get('job_id','N/A')}`")
     else:

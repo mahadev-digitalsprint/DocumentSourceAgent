@@ -49,7 +49,7 @@ def run_pipeline(self, company_id: int):
     """Full 8-agent LangGraph pipeline for one company."""
     db = SessionLocal()
     try:
-        company = db.query(Company).get(company_id)
+        company = db.get(Company, company_id)
         if not company:
             logger.error(f"[TASK] Company {company_id} not found")
             return

@@ -1,146 +1,118 @@
 """
-FinWatch — Documents Page
-Full document browser: Financial / Non-Financial tabs, type filter, metadata panel.
+FinWatch Documents page.
 """
-import streamlit as st
+import os
+
 import pandas as pd
+import requests
+import streamlit as st
+
 from api_client import api
 
 st.set_page_config(page_title="FinWatch · Documents", page_icon="📄", layout="wide")
 
-st.markdown("""
-<style>
-  .doc-card{background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:0.8rem;margin:4px 0;}
-  .fin-badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:0.72rem;font-weight:700;}
-  .fin{background:#1B4F72;color:#fff;} .non{background:#1D6A39;color:#fff;}
-  .new{background:#0e4429;color:#3fb950;} .upd{background:#3d2100;color:#ffa657;}
-  .unc{background:#161b22;color:#8b949e;}
-</style>
-""", unsafe_allow_html=True)
+st.title("Documents")
+st.caption("Browse financial and non-financial documents with fast filters.")
 
-st.title("📄 Documents")
-st.caption("Browse all harvested PDFs. Filter by category, type, company, and status.")
+all_docs = api("GET", "/documents/") or []
+companies = api("GET", "/companies/") or []
+co_map = {c["id"]: c["company_name"] for c in companies}
 
-# ── Fetch ──────────────────────────────────────────────────────────────────────
-all_docs    = api("GET", "/documents/") or []
-companies   = api("GET", "/companies/") or []
-co_map      = {c["id"]: c["company_name"] for c in companies}
+fin_docs = [d for d in all_docs if (d.get("doc_type", "")).startswith("FINANCIAL")]
+nonfin_docs = [d for d in all_docs if (d.get("doc_type", "")).startswith("NON_FINANCIAL")]
+unk_docs = [d for d in all_docs if d not in fin_docs and d not in nonfin_docs]
 
-fin_docs    = [d for d in all_docs if (d.get("doc_type","")).startswith("FINANCIAL")]
-nonfin_docs = [d for d in all_docs if (d.get("doc_type","")).startswith("NON_FINANCIAL")]
-unk_docs    = [d for d in all_docs if not (d.get("doc_type","")).startswith("FINANCIAL") and not (d.get("doc_type","")).startswith("NON_FINANCIAL")]
-
-# ── Summary metrics ────────────────────────────────────────────────────────────
 m1, m2, m3, m4 = st.columns(4)
-m1.metric("Total Documents", len(all_docs))
-m2.metric("💰 Financial", len(fin_docs))
-m3.metric("📋 Non-Financial", len(nonfin_docs))
-m4.metric("❓ Unclassified", len(unk_docs))
-
+m1.metric("Total", len(all_docs))
+m2.metric("Financial", len(fin_docs))
+m3.metric("Non-Financial", len(nonfin_docs))
+m4.metric("Unclassified", len(unk_docs))
 st.divider()
 
-# ── Filters ────────────────────────────────────────────────────────────────────
-f1, f2, f3, f4 = st.columns([2, 2, 2, 2])
-search      = f1.text_input("🔍 Search URL / Headline")
-co_filter   = f2.selectbox("Company", ["All"] + [c["company_name"] for c in companies])
-status_filt = f3.selectbox("Status", ["All", "NEW", "UPDATED", "UNCHANGED", "FAILED"])
-meta_filt   = f4.selectbox("Metadata", ["All", "Extracted", "Not Extracted"])
-
-# ── Tabs ───────────────────────────────────────────────────────────────────────
-tab_fin, tab_nonfin, tab_all = st.tabs([
-    f"💰 Financial ({len(fin_docs)})",
-    f"📋 Non-Financial ({len(nonfin_docs)})",
-    f"📁 All ({len(all_docs)})",
-])
-
-DOC_TYPE_LABELS = {
-    "ANNUAL_REPORT": "Annual Report", "QUARTERLY_RESULTS": "Quarterly Results",
-    "HALF_YEAR_RESULTS": "Half Year", "EARNINGS_RELEASE": "Earnings Release",
-    "INVESTOR_PRESENTATION": "Investor Pres.", "FINANCIAL_STATEMENT": "Financial Stmt",
-    "IPO_PROSPECTUS": "IPO/Prospectus", "RIGHTS_ISSUE": "Rights Issue",
-    "DIVIDEND_NOTICE": "Dividend", "CONCALL_TRANSCRIPT": "Concall Transcript",
-    "ESG_REPORT": "ESG Report", "CORPORATE_GOVERNANCE": "Corp. Gov.",
-    "PRESS_RELEASE": "Press Release", "REGULATORY_FILING": "Regulatory",
-    "LEGAL_DOCUMENT": "Legal", "HR_PEOPLE": "HR/People",
-    "PRODUCT_BROCHURE": "Product", "OTHER": "Other",
-}
+f1, f2, f3, f4 = st.columns(4)
+search = f1.text_input("Search", placeholder="URL, type, or company")
+co_filter = f2.selectbox("Company", ["All"] + [c["company_name"] for c in companies])
+status_filter = f3.selectbox("Status", ["All", "NEW", "UPDATED", "UNCHANGED", "FAILED"])
+meta_filter = f4.selectbox("Metadata", ["All", "Extracted", "Not Extracted"])
 
 
-def _filter_docs(docs):
-    result = docs
+def _filter(docs):
+    rows = docs
     if search:
-        sl = search.lower()
-        result = [d for d in result if sl in (d.get("document_url","")).lower() or sl in (d.get("first_page_text","")).lower()]
+        s = search.lower().strip()
+        rows = [
+            d for d in rows
+            if s in (d.get("document_url", "")).lower()
+            or s in (d.get("doc_type", "")).lower()
+            or s in (co_map.get(d.get("company_id"), "").lower())
+        ]
     if co_filter != "All":
-        result = [d for d in result if co_map.get(d.get("company_id")) == co_filter]
-    if status_filt != "All":
-        result = [d for d in result if d.get("status") == status_filt]
-    if meta_filt == "Extracted":
-        result = [d for d in result if d.get("metadata_extracted")]
-    elif meta_filt == "Not Extracted":
-        result = [d for d in result if not d.get("metadata_extracted")]
-    return result
+        rows = [d for d in rows if co_map.get(d.get("company_id")) == co_filter]
+    if status_filter != "All":
+        rows = [d for d in rows if d.get("status") == status_filter]
+    if meta_filter == "Extracted":
+        rows = [d for d in rows if d.get("metadata_extracted")]
+    elif meta_filter == "Not Extracted":
+        rows = [d for d in rows if not d.get("metadata_extracted")]
+    return rows
 
 
-def _render_doc_type_filter(docs, is_financial=True):
-    types = sorted(set((d.get("doc_type","")).split("|")[-1] for d in docs))
-    sel = st.multiselect("Filter by doc type", types, default=types, key=f"type_{'fin' if is_financial else 'non'}")
-    return [d for d in docs if (d.get("doc_type","")).split("|")[-1] in sel]
-
-
-def _render_table(docs):
-    if not docs:
-        st.info("No documents match the current filters.")
-        return
-
-    # sub-type filter
-    types = sorted(set((d.get("doc_type","")).split("|")[-1] for d in docs))
-    sel_types = st.multiselect("📂 Filter by sub-type", types, default=types, key=f"sub_{id(docs)}")
-    docs = [d for d in docs if (d.get("doc_type","")).split("|")[-1] in sel_types]
-
-    rows = []
+def _to_df(docs):
+    data = []
     for d in docs:
         parts = (d.get("doc_type") or "UNKNOWN|OTHER").split("|")
-        rows.append({
-            "Company": co_map.get(d.get("company_id"), "?"),
-            "Category": parts[0],
-            "Type": DOC_TYPE_LABELS.get(parts[-1], parts[-1]),
-            "Status": d.get("status", ""),
-            "Pages": d.get("page_count", ""),
-            "Size (KB)": round((d.get("file_size_bytes") or 0) / 1024, 1),
-            "Metadata": "✅" if d.get("metadata_extracted") else "⏳",
-            "URL": d.get("document_url", ""),
-        })
-
-    df = pd.DataFrame(rows)
-    st.dataframe(df, use_container_width=True, height=400,
-        column_config={"URL": st.column_config.LinkColumn("URL", display_text="🔗 Open")})
-
-    # Detail panel
-    with st.expander("🔎 View Document Detail"):
-        sel = st.selectbox("Select document", [d["document_url"] for d in docs])
-        doc = next((d for d in docs if d["document_url"] == sel), None)
-        if doc:
-            d1, d2 = st.columns(2)
-            d1.json({k: v for k, v in doc.items() if k not in ["first_page_text"]})
-            if doc.get("first_page_text"):
-                d2.text_area("First Page Text", doc["first_page_text"][:2000], height=300)
+        data.append(
+            {
+                "Company": co_map.get(d.get("company_id"), "Unknown"),
+                "Category": parts[0],
+                "Type": parts[-1],
+                "Status": d.get("status", ""),
+                "Pages": d.get("page_count", ""),
+                "Size (KB)": round((d.get("file_size_bytes") or 0) / 1024, 1),
+                "Metadata": "Yes" if d.get("metadata_extracted") else "No",
+                "URL": d.get("document_url", ""),
+            }
+        )
+    return pd.DataFrame(data)
 
 
-with tab_fin:
-    _render_table(_filter_docs(fin_docs))
+t1, t2, t3 = st.tabs([f"Financial ({len(fin_docs)})", f"Non-Financial ({len(nonfin_docs)})", f"All ({len(all_docs)})"])
 
-with tab_nonfin:
-    _render_table(_filter_docs(nonfin_docs))
-
-with tab_all:
-    _render_table(_filter_docs(all_docs))
-
-# ── Excel download ─────────────────────────────────────────────────────────────
-st.divider()
-if st.button("📥 Download Excel Report", type="primary"):
-    r = api("POST", "/jobs/generate-excel")
-    if r and r.get("excel_url"):
-        st.success(f"✅ Excel generated. [Download]({r['excel_url']})")
+with t1:
+    df = _to_df(_filter(fin_docs))
+    if df.empty:
+        st.info("No financial documents for current filters.")
     else:
-        st.warning("Excel generation queued — check back in a moment.")
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+with t2:
+    df = _to_df(_filter(nonfin_docs))
+    if df.empty:
+        st.info("No non-financial documents for current filters.")
+    else:
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+with t3:
+    df = _to_df(_filter(all_docs))
+    if df.empty:
+        st.info("No documents for current filters.")
+    else:
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+st.divider()
+if st.button("Generate Excel Report", type="primary"):
+    api_base = os.getenv("FINWATCH_API_BASE", "http://localhost:8080/api")
+    try:
+        with st.spinner("Generating workbook..."):
+            response = requests.post(f"{api_base}/jobs/generate-excel", timeout=180)
+        if not response.ok:
+            st.error(f"Excel generation failed: {response.status_code}")
+        else:
+            st.download_button(
+                "Download Workbook",
+                data=response.content,
+                file_name="finwatch_report.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+    except Exception as exc:
+        st.error(f"Excel generation failed: {exc}")

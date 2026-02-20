@@ -41,7 +41,7 @@ def email_agent(state: PipelineState) -> dict:
 
     db = SessionLocal()
     try:
-        company = db.query(Company).get(state["company_id"])
+        company = db.get(Company, state["company_id"])
         if not company:
             return {"email_sent": False}
 

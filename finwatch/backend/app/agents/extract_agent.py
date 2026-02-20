@@ -20,6 +20,7 @@ import logging
 import re
 from datetime import datetime
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 from app.config import get_settings
 from app.database import SessionLocal
@@ -119,7 +120,7 @@ def extract_agent(state: PipelineState) -> dict:
             if not doc_id or not full_text:
                 continue
 
-            doc = db.query(DocumentRegistry).get(doc_id)
+            doc = db.get(DocumentRegistry, doc_id)
             if not doc:
                 continue
 
@@ -127,10 +128,8 @@ def extract_agent(state: PipelineState) -> dict:
             doc_type_field = doc.doc_type or ""
             is_financial = doc_type_field.startswith("FINANCIAL")
 
-            metadata = _extract_with_llm(full_text, is_financial=is_financial)
-            if not metadata:
-                logger.warning(f"[M6-EXTRACT] doc_id={doc_id} — LLM returned empty")
-                continue
+            metadata = _extract_with_llm(full_text, is_financial=is_financial) or {}
+            metadata = _merge_fallback_metadata(doc, metadata, full_text, is_financial=is_financial)
 
             _upsert_metadata(db, doc_id, metadata)
             doc.metadata_extracted = True
@@ -223,6 +222,78 @@ def _parse_json(raw: str) -> Optional[Dict[str, Any]]:
             except Exception:
                 pass
     return None
+
+
+def _merge_fallback_metadata(doc: DocumentRegistry, data: Dict[str, Any], full_text: str, is_financial: bool) -> Dict[str, Any]:
+    """
+    Fill missing metadata fields from deterministic sources when LLM is partial/unavailable.
+    """
+    merged = dict(data or {})
+    text = full_text or ""
+    snippet = text[:4000]
+
+    if not merged.get("document_category"):
+        merged["document_category"] = "FINANCIAL" if is_financial else "NON_FINANCIAL"
+    if not merged.get("document_type"):
+        merged["document_type"] = (doc.doc_type or "UNKNOWN|OTHER").split("|")[-1]
+    if not merged.get("language"):
+        merged["language"] = doc.language if doc.language and doc.language != "Unknown" else "English"
+    if not merged.get("headline"):
+        merged["headline"] = _derive_headline(doc, snippet)
+    if not merged.get("filing_date"):
+        merged["filing_date"] = _derive_date(snippet, doc.document_url)
+    if merged.get("document_category") == "NON_FINANCIAL":
+        merged.setdefault("key_topics", _derive_topics(snippet))
+        merged.setdefault("certifications", [])
+    if merged.get("document_category") == "FINANCIAL":
+        merged.setdefault("audit_status", "Unknown")
+        merged.setdefault("is_preliminary", False)
+
+    return merged
+
+
+def _derive_headline(doc: DocumentRegistry, text: str) -> str:
+    first_line = ""
+    for line in text.splitlines():
+        cleaned = line.strip()
+        if len(cleaned) > 15:
+            first_line = cleaned
+            break
+    if first_line:
+        return first_line[:120]
+
+    path = urlparse(doc.document_url or "").path
+    file_name = (path.split("/")[-1] or "Document").replace(".pdf", "")
+    file_name = re.sub(r"[_\-]+", " ", file_name).strip()
+    return file_name[:120] or "Document metadata extracted"
+
+
+def _derive_date(text: str, url: str) -> Optional[str]:
+    # 2024-03-31 / 2024/03/31
+    m = re.search(r"\b(20\d{2})[-/](0[1-9]|1[0-2])[-/](0[1-9]|[12]\d|3[01])\b", text)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+
+    # 31/03/2024 or 31-03-2024
+    m = re.search(r"\b(0[1-9]|[12]\d|3[01])[-/](0[1-9]|1[0-2])[-/](20\d{2})\b", text)
+    if m:
+        return f"{m.group(3)}-{m.group(2)}-{m.group(1)}"
+
+    # fallback to year in URL/text
+    m = re.search(r"\b(20\d{2})\b", f"{url} {text[:500]}")
+    if m:
+        return f"{m.group(1)}-01-01"
+    return None
+
+
+def _derive_topics(text: str):
+    topic_bank = [
+        "sustainability", "governance", "compliance", "regulatory", "board", "risk",
+        "employee", "diversity", "climate", "esg", "product", "legal",
+    ]
+    lower = text.lower()
+    topics = [t for t in topic_bank if t in lower]
+    return topics[:5]
 
 
 # ── DB upsert ─────────────────────────────────────────────────────────────────

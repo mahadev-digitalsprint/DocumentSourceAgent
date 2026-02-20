@@ -192,7 +192,9 @@ st.subheader("🚀 Run Pipeline")
 rc1, rc2 = st.columns([3, 1])
 rc1.markdown("Trigger the full crawl → classify → extract → email pipeline for **all active companies**.")
 if rc2.button("▶ Run All Companies", type="primary", use_container_width=True):
-    r = api("POST", "/jobs/run-all")
+    r = api("POST", "/jobs/run-all-direct")
+    if not r:
+        r = api("POST", "/jobs/run-all")
     if r:
         st.success(f"✅ Pipeline started! Job ID: `{r.get('job_id','N/A')}`")
     else:

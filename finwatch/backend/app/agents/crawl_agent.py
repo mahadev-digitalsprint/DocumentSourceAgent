@@ -12,6 +12,7 @@ Strategies (in order):
 import re
 import hashlib
 import logging
+import xml.etree.ElementTree as ET
 from typing import List, Set
 from urllib.parse import urljoin, urlparse
 
@@ -32,6 +33,7 @@ FINANCIAL_KEYWORDS = [
 
 PDF_REGEX = re.compile(r'https?://[^\s\'"<>]+\.pdf(?:\?[^\s\'"<>]*)?', re.IGNORECASE)
 MAX_CRAWL_PAGES = 200
+USER_AGENT = "Mozilla/5.0 FinWatch/1.0"
 
 # Common TLDs and subdomains to strip when cleaning company names
 _STRIP_PREFIXES = re.compile(r'^(www\d*|ir|investors?|investor-relations|corp|corporate)\.', re.I)
@@ -108,7 +110,15 @@ def crawl_agent(state: PipelineState) -> dict:
     except Exception as e:
         logger.warning(f"[M1-CRAWL][EDGAR] Failed: {e}")
 
-    # Strategy 4: BeautifulSoup recursive crawler
+    # Strategy 4: Sitemap parsing (fast path for enterprise IR sites)
+    try:
+        sm_urls = _strategy_sitemap(website)
+        all_urls.update(sm_urls)
+        logger.info(f"[M1-CRAWL][Sitemap] +{len(sm_urls)} URLs")
+    except Exception as e:
+        logger.warning(f"[M1-CRAWL][Sitemap] Failed: {e}")
+
+    # Strategy 5: BeautifulSoup recursive crawler
     try:
         bs_urls = _strategy_bs4(website, depth=state.get("crawl_depth", 3))
         all_urls.update(bs_urls)
@@ -116,7 +126,7 @@ def crawl_agent(state: PipelineState) -> dict:
     except Exception as e:
         logger.warning(f"[M1-CRAWL][BS4] Failed: {e}")
 
-    # Strategy 5: Regex PDF scan on raw HTML
+    # Strategy 6: Regex PDF scan on raw HTML
     try:
         rx_urls = _strategy_regex(website)
         all_urls.update(rx_urls)
@@ -163,9 +173,9 @@ def _strategy_firecrawl(url: str) -> List[str]:
         found = []
         for item in data.get("data", []):
             for link in item.get("links", []):
-                if isinstance(link, str) and link.lower().endswith(".pdf"):
-                    found.append(link)
-        return found
+                if isinstance(link, str) and _is_probable_pdf_url(link):
+                    found.append(_normalize_url(link))
+        return [u for u in found if u]
     except httpx.HTTPStatusError as e:
         if "insufficient" in str(e).lower() or "credits" in str(e).lower() or "402" in str(e):
             logger.warning("[M1-CRAWL][Firecrawl] Insufficient credits — skipping.")
@@ -213,11 +223,12 @@ def _strategy_tavily(company_name: str, website_url: str = "") -> List[str]:
             )
             resp.raise_for_status()
             results = resp.json().get("results", [])
-            # Accept both .pdf URLs and pages that likely host PDFs
             for r in results:
                 url = r.get("url", "")
-                if url.lower().endswith(".pdf"):
-                    found.append(url)
+                if _is_probable_pdf_url(url):
+                    n = _normalize_url(url)
+                    if n:
+                        found.append(n)
         except Exception:
             pass
     return found
@@ -258,26 +269,30 @@ def _strategy_bs4(base_url: str, depth: int = 3) -> List[str]:
             return
         visited.add(url)
         try:
-            r = httpx.get(url, follow_redirects=True, timeout=12,
-                          headers={"User-Agent": "Mozilla/5.0 FinWatch/1.0"})
+            r = httpx.get(url, follow_redirects=True, timeout=12, headers={"User-Agent": USER_AGENT})
             r.raise_for_status()
             soup = BeautifulSoup(r.text, "html.parser")
             base = f"{urlparse(url).scheme}://{urlparse(url).netloc}"
 
-            for tag in soup.find_all(["a", "iframe", "embed", "object"], href=True):
-                href = tag.get("href") or tag.get("src") or ""
-                full = urljoin(base, href)
-                if full.lower().endswith(".pdf"):
+            for tag in soup.find_all("a", href=True):
+                href = tag.get("href") or ""
+                full = _normalize_url(urljoin(base, href))
+                if not full:
+                    continue
+                if _is_probable_pdf_url(full):
                     pdf_links.add(full)
                 elif urlparse(full).netloc == base_domain and full not in visited:
                     _crawl(full, current_depth - 1)
 
-            # Also check <object data=> and <frame src=>
-            for tag in soup.find_all(True):
-                for attr in ["src", "data"]:
+            # Embedded PDF links via src/data/object/iframe.
+            for tag in soup.find_all(["iframe", "embed", "object"]):
+                for attr in ("src", "data"):
                     val = tag.get(attr, "")
-                    if val and val.lower().endswith(".pdf"):
-                        pdf_links.add(urljoin(base, val))
+                    if not val:
+                        continue
+                    full = _normalize_url(urljoin(base, val))
+                    if full and _is_probable_pdf_url(full):
+                        pdf_links.add(full)
 
         except Exception:
             pass
@@ -289,27 +304,84 @@ def _strategy_bs4(base_url: str, depth: int = 3) -> List[str]:
 def _strategy_regex(url: str) -> List[str]:
     """Scan raw HTML source for .pdf URLs using regex."""
     try:
-        r = httpx.get(url, follow_redirects=True, timeout=12,
-                      headers={"User-Agent": "Mozilla/5.0 FinWatch/1.0"})
+        r = httpx.get(url, follow_redirects=True, timeout=12, headers={"User-Agent": USER_AGENT})
         matches = PDF_REGEX.findall(r.text)
-        return list(set(matches))
+        return list({u for u in (_normalize_url(m) for m in matches) if u})
     except Exception:
         return []
 
 
 def _filter_urls(urls: List[str]) -> List[str]:
-    """Deduplicate and retain only financial-keyword URLs."""
+    """Normalize and deduplicate discovered PDF URLs."""
     seen: Set[str] = set()
     result = []
     for url in urls:
-        key = hashlib.md5(url.encode()).hexdigest()
+        norm = _normalize_url(url)
+        if not norm or not _is_probable_pdf_url(norm):
+            continue
+        key = hashlib.md5(norm.encode()).hexdigest()
         if key in seen:
             continue
         seen.add(key)
-        url_lower = url.lower()
-        if any(kw in url_lower for kw in FINANCIAL_KEYWORDS):
-            result.append(url)
-        # Even if no keyword in URL: if found by Firecrawl/EDGAR trust it
-        elif url not in result:
-            result.append(url)
+        result.append(norm)
     return result
+
+
+def _strategy_sitemap(base_url: str) -> List[str]:
+    """
+    Parse /sitemap.xml and nested sitemap indexes to discover PDF URLs quickly.
+    """
+    parsed = urlparse(base_url)
+    root = f"{parsed.scheme}://{parsed.netloc}"
+    candidates = [
+        urljoin(root, "/sitemap.xml"),
+        urljoin(root, "/sitemap_index.xml"),
+    ]
+
+    seen_maps: Set[str] = set()
+    queue = list(candidates)
+    found: Set[str] = set()
+
+    while queue and len(seen_maps) < 30:
+        sm_url = queue.pop(0)
+        if sm_url in seen_maps:
+            continue
+        seen_maps.add(sm_url)
+        try:
+            r = httpx.get(sm_url, timeout=15, headers={"User-Agent": USER_AGENT})
+            if r.status_code >= 400:
+                continue
+            root_el = ET.fromstring(r.text)
+            for loc in root_el.findall(".//{*}loc"):
+                loc_url = (loc.text or "").strip()
+                if not loc_url:
+                    continue
+                n = _normalize_url(loc_url)
+                if not n:
+                    continue
+                if n.lower().endswith(".xml"):
+                    queue.append(n)
+                elif _is_probable_pdf_url(n):
+                    found.add(n)
+        except Exception:
+            continue
+
+    return list(found)
+
+
+def _normalize_url(url: str) -> str:
+    if not isinstance(url, str):
+        return ""
+    u = url.strip()
+    if not u.lower().startswith(("http://", "https://")):
+        return ""
+    parsed = urlparse(u)
+    clean = parsed._replace(fragment="")
+    return clean.geturl()
+
+
+def _is_probable_pdf_url(url: str) -> bool:
+    lower = (url or "").lower()
+    if not lower:
+        return False
+    return ".pdf" in lower

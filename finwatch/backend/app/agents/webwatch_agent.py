@@ -30,6 +30,7 @@ settings = get_settings()
 PDF_RE = re.compile(r'https?://[^\s\'"<>]+\.pdf(?:\?[^\s\'"<>]*)?', re.IGNORECASE)
 MAX_PAGES = 200
 MAX_TEXT_LEN = 50_000
+USER_AGENT = "Mozilla/5.0 FinWatch/1.0"
 
 
 def webwatch_agent(state: PipelineState) -> dict:
@@ -67,8 +68,7 @@ def webwatch_agent(state: PipelineState) -> dict:
         # Process each discovered page
         for page_url in all_pages:
             try:
-                resp = httpx.get(page_url, follow_redirects=True, timeout=15,
-                                 headers={"User-Agent": "Mozilla/5.0 FinWatch/1.0"})
+                resp = httpx.get(page_url, follow_redirects=True, timeout=15, headers={"User-Agent": USER_AGENT})
                 status_code = resp.status_code
 
                 soup = BeautifulSoup(resp.text, "html.parser")
@@ -79,11 +79,13 @@ def webwatch_agent(state: PipelineState) -> dict:
                 page_base = f"{urlparse(page_url).scheme}://{urlparse(page_url).netloc}"
                 pdf_on_page: List[str] = []
                 for tag in soup.find_all("a", href=True):
-                    href = urljoin(page_base, tag["href"])
-                    if href.lower().endswith(".pdf"):
+                    href = _normalize_url(urljoin(page_base, tag["href"]))
+                    if href and ".pdf" in href.lower():
                         pdf_on_page.append(href)
                 for match in PDF_RE.findall(resp.text):
-                    pdf_on_page.append(match)
+                    n = _normalize_url(match)
+                    if n:
+                        pdf_on_page.append(n)
                 pdf_on_page = list(set(pdf_on_page))
 
                 existing: PageSnapshot = db_snapshots.get(page_url)
@@ -170,7 +172,7 @@ def webwatch_agent(state: PipelineState) -> dict:
 def _discover_pages(base_url: str, depth: int) -> List[str]:
     """Return all internal page URLs up to max depth."""
     visited = set()
-    queue = [(base_url, 0)]
+    queue = [(_normalize_url(base_url) or base_url, 0)]
     base_domain = urlparse(base_url).netloc
 
     while queue:
@@ -179,14 +181,15 @@ def _discover_pages(base_url: str, depth: int) -> List[str]:
             continue
         visited.add(url)
         try:
-            r = httpx.get(url, follow_redirects=True, timeout=10,
-                          headers={"User-Agent": "Mozilla/5.0 FinWatch/1.0"})
+            r = httpx.get(url, follow_redirects=True, timeout=10, headers={"User-Agent": USER_AGENT})
             soup = BeautifulSoup(r.text, "html.parser")
             page_base = f"{urlparse(url).scheme}://{urlparse(url).netloc}"
             for tag in soup.find_all("a", href=True):
-                full = urljoin(page_base, tag["href"])
+                full = _normalize_url(urljoin(page_base, tag["href"]))
+                if not full:
+                    continue
                 if urlparse(full).netloc == base_domain and full not in visited:
-                    if not any(full.endswith(e) for e in [".pdf", ".jpg", ".png", ".css", ".js"]):
+                    if not any(full.lower().endswith(e) for e in [".pdf", ".jpg", ".png", ".css", ".js", ".svg"]):
                         queue.append((full, d + 1))
         except Exception:
             pass
@@ -222,3 +225,14 @@ def _save_change(db: Session, company_id: int, page_url: str, change_type: str,
         new_hash=new_hash,
     )
     db.add(change)
+
+
+def _normalize_url(url: str) -> str:
+    if not isinstance(url, str):
+        return ""
+    u = url.strip()
+    if not u.lower().startswith(("http://", "https://")):
+        return ""
+    parsed = urlparse(u)
+    cleaned = parsed._replace(fragment="")
+    return cleaned.geturl()

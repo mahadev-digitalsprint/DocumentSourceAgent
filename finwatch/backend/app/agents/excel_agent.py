@@ -47,10 +47,10 @@ def excel_agent(state: PipelineState) -> dict:
     """LangGraph node — build and save the Excel workbook."""
     db = SessionLocal()
     try:
-        report_dir = os.path.join(
-            settings.base_download_path.replace("/app/downloads", "downloads"),
-            "reports"
-        )
+        base_path = state.get("base_folder") or settings.base_download_path or "downloads"
+        if base_path.startswith("/app/"):
+            base_path = base_path.replace("/app/", "")
+        report_dir = os.path.join(base_path, "reports")
         os.makedirs(report_dir, exist_ok=True)
         date_str = datetime.utcnow().strftime("%Y%m%d_%H%M")
         out_path  = os.path.join(report_dir, f"finwatch_{date_str}.xlsx")

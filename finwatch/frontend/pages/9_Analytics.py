@@ -14,7 +14,7 @@ st.caption("Visual breakdowns of documents, changes, and document intelligence a
 # ── Fetch ──────────────────────────────────────────────────────────────────────
 docs       = api("GET", "/documents/") or []
 companies  = api("GET", "/companies/") or []
-changes    = api("GET", "/changes/document") or []
+changes    = api("GET", "/documents/changes/document") or []
 pg_changes = api("GET", "/webwatch/changes") or []
 co_map     = {c["id"]: c["company_name"] for c in companies}
 

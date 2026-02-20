@@ -134,7 +134,7 @@ def classify_agent(state: PipelineState) -> dict:
             if not doc_id:
                 continue
 
-            doc = db.query(DocumentRegistry).get(doc_id)
+            doc = db.get(DocumentRegistry, doc_id)
             if not doc:
                 continue
 

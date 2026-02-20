@@ -64,7 +64,7 @@ def bulk_create(companies: List[CompanyCreate], db: Session = Depends(get_db)):
 
 @router.delete("/{company_id}", status_code=204)
 def delete_company(company_id: int, db: Session = Depends(get_db)):
-    c = db.query(Company).get(company_id)
+    c = db.get(Company, company_id)
     if not c:
         raise HTTPException(404, "Not found")
     db.delete(c); db.commit()
@@ -72,7 +72,7 @@ def delete_company(company_id: int, db: Session = Depends(get_db)):
 
 @router.patch("/{company_id}/toggle")
 def toggle_active(company_id: int, db: Session = Depends(get_db)):
-    c = db.query(Company).get(company_id)
+    c = db.get(Company, company_id)
     if not c:
         raise HTTPException(404, "Not found")
     c.active = not c.active

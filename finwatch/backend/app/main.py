@@ -1,6 +1,7 @@
 """FastAPI application — main entry point."""
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from app.database import engine
 from app import models
 from app.api import companies, jobs, documents, webwatch, alerts, settings as settings_router
@@ -33,3 +34,20 @@ app.include_router(settings_router.router, prefix="/api/settings", tags=["Settin
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "FinWatch API v2"}
+
+
+@app.get("/api/health")
+def health_api():
+    return health()
+
+
+# Backward-compatible aliases used by older frontend pages.
+@app.get("/api/metadata/")
+@app.get("/api/metadata")
+def metadata_alias():
+    return RedirectResponse(url="/api/documents/metadata/")
+
+
+@app.get("/api/changes/document")
+def changes_alias():
+    return RedirectResponse(url="/api/documents/changes/document")

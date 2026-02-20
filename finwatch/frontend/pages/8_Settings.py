@@ -29,7 +29,7 @@ with col1:
 with col2:
     st.subheader("🩺 Health Check")
     if st.button("Check API Health", use_container_width=True):
-        res = get("/../health")
+        res = get("/health")
         if res and "status" in res:
             st.success(f"✅ API: {res['status']}")
         else:

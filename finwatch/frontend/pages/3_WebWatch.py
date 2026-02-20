@@ -127,6 +127,8 @@ c1, c2 = st.columns([3, 1])
 c1.markdown("**Run an immediate WebWatch scan** for all active companies.")
 if c2.button("🔍 Scan Now", type="primary", use_container_width=True):
     r = api("POST", "/jobs/webwatch-now")
+    if not r:
+        r = api("POST", "/jobs/webwatch-direct")
     if r:
         st.success(f"✅ WebWatch scan triggered! Job: `{r.get('job_id','N/A')}`")
     else:

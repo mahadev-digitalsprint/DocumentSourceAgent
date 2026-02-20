@@ -57,6 +57,7 @@ def list_documents(
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/metadata/")
+@router.get("/metadata")
 def list_all_metadata(
     company_id: Optional[int] = None,
     db: Session = Depends(get_db),
@@ -178,7 +179,7 @@ def get_error_logs(company_id: Optional[int] = None, db: Session = Depends(get_d
 
 @router.get("/{company_id}/excel")
 def download_excel(company_id: int, db: Session = Depends(get_db)):
-    company = db.query(Company).get(company_id)
+    company = db.get(Company, company_id)
     if not company:
         raise HTTPException(404, "Company not found")
     from app.agents.excel_agent import excel_agent
