@@ -188,3 +188,28 @@ class SystemSetting(Base):
     key = Column(String(100), primary_key=True)
     value = Column(Text, nullable=False)
     updated_at = Column(DateTime, onupdate=func.now())
+
+
+# -----------------------------------------------------------------------------
+# 10. Job Runs (operational history for queued/direct executions)
+# -----------------------------------------------------------------------------
+class JobRun(Base):
+    __tablename__ = "job_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(String(64), unique=True, nullable=False, index=True)
+    trigger_type = Column(String(50), nullable=False)   # PIPELINE|WEBWATCH|DIGEST|EXCEL
+    mode = Column(String(20), nullable=False)           # QUEUED|DIRECT
+    status = Column(String(30), nullable=False, default="QUEUED")  # QUEUED|RUNNING|DONE|FAILED|...
+    celery_job_id = Column(String(64), index=True)
+
+    company_id = Column(Integer, nullable=True)
+    company_name = Column(String(255), nullable=True)
+
+    result_payload = Column(JSON, nullable=True)
+    error_message = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, server_default=func.now())
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, onupdate=func.now())
