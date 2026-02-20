@@ -14,6 +14,7 @@ import type {
   EmailAlertSaveInput,
   DocumentRecord,
   DocumentMetadataRecord,
+  JobRunHistoryItem,
   JobStatusResponse,
   MetadataListItem,
   PageChangeDiff,
@@ -78,6 +79,8 @@ export const jobsApi = {
   webwatchQueued: () => request<QueuedJobResponse>('/jobs/webwatch-now', { method: 'POST' }),
   webwatchDirect: () => request<WebwatchDirectResult>('/jobs/webwatch-direct', { method: 'POST' }),
   status: (jobId: string) => request<JobStatusResponse>(`/jobs/status/${jobId}`),
+  statusByRunId: (runId: string) => request<JobRunHistoryItem>(`/jobs/status/run/${runId}`),
+  history: (limit = 100) => request<JobRunHistoryItem[]>(`/jobs/history?limit=${limit}`),
 }
 
 export const documentsApi = {

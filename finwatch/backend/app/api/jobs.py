@@ -1,17 +1,22 @@
 """Pipeline job control: queued (Celery) and direct (sync) execution."""
 from __future__ import annotations
 
+import asyncio
+from datetime import datetime, timedelta
+import json
 import logging
 import os
 import uuid
+from collections import deque
 from typing import Any, Callable, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
-from app.database import get_db
+from app.database import SessionLocal, get_db
 from app.models import Company, JobRun, SystemSetting
 from app.services.job_run_service import (
     create_job_run,
@@ -84,6 +89,29 @@ def _to_run_out(run: JobRun) -> JobRunOut:
         finished_at=_to_iso(run.finished_at),
         updated_at=_to_iso(run.updated_at),
     )
+
+
+def _to_run_event_payload(run: JobRun) -> dict:
+    return {
+        "run_id": run.run_id,
+        "trigger_type": run.trigger_type,
+        "mode": run.mode,
+        "status": run.status,
+        "celery_job_id": run.celery_job_id,
+        "company_id": run.company_id,
+        "company_name": run.company_name,
+        "error_message": run.error_message,
+        "created_at": _to_iso(run.created_at),
+        "started_at": _to_iso(run.started_at),
+        "finished_at": _to_iso(run.finished_at),
+        "updated_at": _to_iso(run.updated_at),
+    }
+
+
+def _run_version_key(run: JobRun) -> str:
+    stamp = run.updated_at or run.finished_at or run.started_at or run.created_at
+    stamp_text = _to_iso(stamp) or "na"
+    return f"{run.run_id}:{run.status}:{stamp_text}"
 
 
 def _sync_run_status_from_celery(db: Session, run_id: str, celery_status: str, payload: Any) -> None:
@@ -292,6 +320,62 @@ def job_status_by_run_id(run_id: str, db: Session = Depends(get_db)):
         except Exception:
             pass
     return _to_run_out(run)
+
+
+@router.get("/events")
+async def stream_job_events(
+    request: Request,
+    limit: int = Query(default=30, ge=5, le=200),
+    poll_seconds: float = Query(default=2.0, ge=0.5, le=15.0),
+    once: bool = Query(default=False),
+):
+    async def event_stream():
+        seen_versions: deque[str] = deque(maxlen=500)
+        seen_lookup = set()
+        warmup_cutoff = datetime.utcnow() - timedelta(minutes=15)
+
+        while True:
+            if await request.is_disconnected():
+                break
+
+            db = SessionLocal()
+            try:
+                query = db.query(JobRun)
+                query = query.filter(
+                    (JobRun.created_at >= warmup_cutoff)
+                    | (JobRun.updated_at >= warmup_cutoff)
+                )
+                runs = query.order_by(JobRun.created_at.desc()).limit(limit).all()
+            finally:
+                db.close()
+
+            fresh = []
+            for run in reversed(runs):
+                version = _run_version_key(run)
+                if version in seen_lookup:
+                    continue
+                seen_versions.append(version)
+                seen_lookup.add(version)
+                fresh.append(run)
+
+            while len(seen_lookup) > seen_versions.maxlen:
+                removed = seen_versions.popleft()
+                seen_lookup.discard(removed)
+
+            for run in fresh:
+                payload = _to_run_event_payload(run)
+                yield f"event: job:event\ndata: {json.dumps(payload)}\n\n"
+
+            yield ": ping\n\n"
+            if once:
+                break
+            await asyncio.sleep(poll_seconds)
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+    }
+    return StreamingResponse(event_stream(), media_type="text/event-stream", headers=headers)
 
 
 @router.post("/run-direct/{company_id}", response_model=JobOut)

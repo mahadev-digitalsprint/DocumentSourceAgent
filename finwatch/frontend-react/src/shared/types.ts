@@ -134,6 +134,22 @@ export type JobStatusResponse = {
   result?: Record<string, unknown> | null
 }
 
+export type JobRunHistoryItem = {
+  run_id: string
+  trigger_type: string
+  mode: string
+  status: string
+  celery_job_id?: string | null
+  company_id?: number | null
+  company_name?: string | null
+  result_payload?: Record<string, unknown> | null
+  error_message?: string | null
+  created_at?: string | null
+  started_at?: string | null
+  finished_at?: string | null
+  updated_at?: string | null
+}
+
 export type WebwatchDirectResult = {
   job_id?: string
   status: string
