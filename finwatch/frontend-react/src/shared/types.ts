@@ -13,6 +13,41 @@ export type CompanyCreateInput = {
   crawl_depth: number
 }
 
+export type CompanyIntakeRunInput = {
+  company_name: string
+  website_url: string
+  crawl_depth: number
+  reuse_existing?: boolean
+}
+
+export type CompanyOverview = {
+  documents_total: number
+  quarterly_documents: number
+  yearly_documents: number
+  other_documents: number
+  financial_documents: number
+  non_financial_documents: number
+  download_folders: string[]
+}
+
+export type CompanyOverviewResponse = {
+  company: Company
+  overview: CompanyOverview
+}
+
+export type CompanyIntakeRunResponse = {
+  company: Company
+  run_result: {
+    company: string
+    pdfs_found?: number
+    docs_downloaded?: number
+    has_changes?: boolean
+    errors?: number
+    email_sent?: boolean
+  }
+  overview: CompanyOverview
+}
+
 export type DocumentRecord = {
   id: number
   company_id: number
@@ -29,6 +64,36 @@ export type DocumentRecord = {
   first_seen_at?: string | null
   last_seen_at?: string | null
   created_at: string
+}
+
+export type CompanyDownloadViewRecord = {
+  id: number
+  document_url: string
+  local_path?: string | null
+  folder_path?: string | null
+  doc_type?: string | null
+  status: string
+  period_bucket: 'QUARTERLY' | 'YEARLY' | 'OTHER'
+  category_bucket: 'FINANCIAL' | 'NON_FINANCIAL'
+  file_size_bytes?: number | null
+  created_at?: string | null
+}
+
+export type CompanyDownloadViewResponse = {
+  company_id: number
+  company_name: string
+  filters: {
+    period: string
+    category: string
+  }
+  summary: {
+    documents_total: number
+    quarterly_documents: number
+    yearly_documents: number
+    other_documents: number
+    download_folders: string[]
+  }
+  records: CompanyDownloadViewRecord[]
 }
 
 export type DocumentMetadataRecord = {

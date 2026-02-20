@@ -27,6 +27,7 @@ from app.services.job_run_service import (
     mark_retrying,
     mark_running,
 )
+from app.services.pipeline_service import build_initial_state, run_company_sync
 from app.services.run_guard import acquire_singleflight, ensure_no_overlap
 from app.services.scheduler_service import scheduler_status, scheduler_tick, update_scheduler_config
 from app.utils.time import utc_now_naive
@@ -183,39 +184,8 @@ def _queue_task(
 
 
 def _run_company_sync(company: Company, db: Session) -> dict:
-    from app.workflow.graph import pipeline_graph
-
     base_folder = _get_base_folder(db)
-    initial_state = {
-        "company_id": company.id,
-        "company_name": company.company_name,
-        "company_slug": company.company_slug,
-        "website_url": company.website_url,
-        "base_folder": base_folder,
-        "crawl_depth": company.crawl_depth or 3,
-        "pdf_urls": [],
-        "pdf_sources": {},
-        "crawl_errors": [],
-        "page_changes": [],
-        "has_changes": False,
-        "downloaded_docs": [],
-        "errors": [],
-        "excel_path": None,
-        "email_sent": False,
-    }
-
-    logger.info("[DIRECT] Pipeline start for %s", company.company_name)
-    result = pipeline_graph.invoke(initial_state)
-    summary = {
-        "company": company.company_name,
-        "pdfs_found": len(result.get("pdf_urls", [])),
-        "docs_downloaded": len(result.get("downloaded_docs", [])),
-        "has_changes": bool(result.get("has_changes")),
-        "errors": len(result.get("errors", [])),
-        "email_sent": bool(result.get("email_sent")),
-    }
-    logger.info("[DIRECT] Pipeline finished for %s", company.company_name)
-    return summary
+    return run_company_sync(company, base_folder)
 
 
 @router.post("/run/{company_id}", response_model=JobOut)
@@ -558,23 +528,7 @@ def webwatch_direct(db: Session = Depends(get_db)):
         total_page_changes = 0
 
         for company in companies:
-            state = {
-                "company_id": company.id,
-                "company_name": company.company_name,
-                "company_slug": company.company_slug,
-                "website_url": company.website_url,
-                "base_folder": base_folder,
-            "crawl_depth": company.crawl_depth or 3,
-            "pdf_urls": [],
-            "pdf_sources": {},
-            "page_changes": [],
-                "has_changes": False,
-                "downloaded_docs": [],
-                "errors": [],
-                "excel_path": None,
-                "email_sent": False,
-                "crawl_errors": [],
-            }
+            state = build_initial_state(company, base_folder)
             try:
                 result = webwatch_agent(state)
                 change_count = len(result.get("page_changes", []))

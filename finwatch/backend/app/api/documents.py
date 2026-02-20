@@ -38,6 +38,15 @@ def _api_error(status_code: int, code: str, message: str, details: Optional[dict
     )
 
 
+def _period_bucket(doc_type: str, document_url: str) -> str:
+    text = f"{doc_type or ''} {document_url or ''}".lower()
+    if any(token in text for token in ["quarter", "q1", "q2", "q3", "q4", "half-year", "half year", "interim"]):
+        return "QUARTERLY"
+    if any(token in text for token in ["annual", "yearly", "10-k", "20-f", "full year", "fy"]):
+        return "YEARLY"
+    return "OTHER"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Documents
 # ─────────────────────────────────────────────────────────────────────────────
@@ -354,6 +363,83 @@ def review_queue(
         }
         for d in docs
     ]
+
+
+@router.get("/company/{company_id}/download-view")
+def company_download_view(
+    company_id: int,
+    period: str = Query(default="ALL"),
+    category: str = Query(default="ALL"),
+    limit: int = Query(default=1500, ge=1, le=5000),
+    db: Session = Depends(get_db),
+):
+    company = db.get(Company, company_id)
+    if not company:
+        _api_error(404, "COMPANY_NOT_FOUND", "Company not found", {"company_id": company_id})
+
+    rows = (
+        db.query(DocumentRegistry)
+        .filter(DocumentRegistry.company_id == company_id)
+        .order_by(DocumentRegistry.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+    bucket = (period or "ALL").upper()
+    category_filter = (category or "ALL").upper()
+    records = []
+    quarterly_count = 0
+    yearly_count = 0
+    other_count = 0
+    folders = set()
+
+    for row in rows:
+        row_period = _period_bucket(row.doc_type or "", row.document_url or "")
+        row_category = "FINANCIAL" if (row.doc_type or "").startswith("FINANCIAL") else "NON_FINANCIAL"
+        if bucket != "ALL" and row_period != bucket:
+            continue
+        if category_filter != "ALL" and row_category != category_filter:
+            continue
+
+        if row_period == "QUARTERLY":
+            quarterly_count += 1
+        elif row_period == "YEARLY":
+            yearly_count += 1
+        else:
+            other_count += 1
+
+        folder_path = os.path.dirname(row.local_path or "") if row.local_path else ""
+        if folder_path:
+            folders.add(folder_path)
+
+        records.append(
+            {
+                "id": row.id,
+                "document_url": row.document_url,
+                "local_path": row.local_path,
+                "folder_path": folder_path,
+                "doc_type": row.doc_type,
+                "status": row.status,
+                "period_bucket": row_period,
+                "category_bucket": row_category,
+                "file_size_bytes": row.file_size_bytes,
+                "created_at": str(row.created_at or ""),
+            }
+        )
+
+    return {
+        "company_id": company.id,
+        "company_name": company.company_name,
+        "filters": {"period": bucket, "category": category_filter},
+        "summary": {
+            "documents_total": len(records),
+            "quarterly_documents": quarterly_count,
+            "yearly_documents": yearly_count,
+            "other_documents": other_count,
+            "download_folders": sorted(path for path in folders if path),
+        },
+        "records": records,
+    }
 
 
 @router.patch("/review/{doc_id}")

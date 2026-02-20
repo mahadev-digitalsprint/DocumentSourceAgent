@@ -9,6 +9,10 @@ import type {
   ChangeLog,
   Company,
   CompanyCreateInput,
+  CompanyDownloadViewResponse,
+  CompanyIntakeRunInput,
+  CompanyIntakeRunResponse,
+  CompanyOverviewResponse,
   CrawlDiagnosticRecord,
   CrawlDiagnosticsSummary,
   DirectRunResult,
@@ -77,11 +81,18 @@ export const companyApi = {
     request<boolean>(`/companies/${companyId}`, {
       method: 'DELETE',
     }),
+  overview: (companyId: number) => request<CompanyOverviewResponse>(`/companies/${companyId}/overview`),
+  intakeRun: (payload: CompanyIntakeRunInput) =>
+    request<CompanyIntakeRunResponse>('/companies/intake-run', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
 }
 
 export const jobsApi = {
   runAllQueued: () => request<QueuedJobResponse>('/jobs/run-all', { method: 'POST' }),
   runAllDirect: () => request<DirectRunResult>('/jobs/run-all-direct', { method: 'POST' }),
+  runCompanyDirect: (companyId: number) => request<QueuedJobResponse>(`/jobs/run-direct/${companyId}`, { method: 'POST' }),
   webwatchQueued: () => request<QueuedJobResponse>('/jobs/webwatch-now', { method: 'POST' }),
   webwatchDirect: () => request<WebwatchDirectResult>('/jobs/webwatch-direct', { method: 'POST' }),
   status: (jobId: string) => request<JobStatusResponse>(`/jobs/status/${jobId}`),
@@ -146,6 +157,14 @@ export const documentsApi = {
       method: 'PATCH',
       body: JSON.stringify(payload),
     }),
+  companyDownloadView: (companyId: number, args?: { period?: string; category?: string; limit?: number }) => {
+    const params = new URLSearchParams()
+    if (args?.period) params.set('period', args.period)
+    if (args?.category) params.set('category', args.category)
+    if (args?.limit) params.set('limit', String(args.limit))
+    const qs = params.toString()
+    return request<CompanyDownloadViewResponse>(`/documents/company/${companyId}/download-view${qs ? `?${qs}` : ''}`)
+  },
 }
 
 export const webwatchApi = {
