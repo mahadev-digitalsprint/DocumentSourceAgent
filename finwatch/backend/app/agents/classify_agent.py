@@ -4,11 +4,14 @@ from __future__ import annotations
 import logging
 from typing import List, Tuple
 
+from app.config import get_settings
 from app.database import SessionLocal
-from app.models import DocumentRegistry
+from app.models import Company, DocumentRegistry
+from app.services.file_organizer import move_to_classified_folder
 from app.workflow.state import PipelineState
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
 # (category, doc_type, keyword list)
 RULES = [
@@ -54,6 +57,24 @@ def classify_agent(state: PipelineState) -> dict:
             doc.classifier_confidence = confidence
             doc.classifier_version = "rule_v2"
             doc.needs_review = confidence < 0.6 or doc_type == "OTHER"
+
+            company = db.get(Company, doc.company_id)
+            if company and doc.local_path:
+                shared_path_count = (
+                    db.query(DocumentRegistry)
+                    .filter(
+                        DocumentRegistry.id != doc.id,
+                        DocumentRegistry.local_path == doc.local_path,
+                    )
+                    .count()
+                )
+                doc.local_path = move_to_classified_folder(
+                    local_path=doc.local_path,
+                    company_slug=company.company_slug,
+                    doc_type_field=doc.doc_type,
+                    default_base=settings.base_download_path,
+                    copy_mode=shared_path_count > 0,
+                )
             db.commit()
 
             logger.info(
